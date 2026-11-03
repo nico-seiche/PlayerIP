@@ -85,15 +85,23 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .player { position: fixed; inset: 0; z-index: 20; background: #000; display: grid; }
 .player video { width: 100%; height: 100%; background: #000; object-fit: contain; }
 .player-bar {
-  position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 4px;
-  padding: calc(var(--safe-t) + 6px) 8px 24px; background: linear-gradient(#000a, transparent);
+  position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 14px;
+  padding: calc(var(--safe-t) + 12px) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left));
+  background: linear-gradient(#000b, transparent);
   transition: opacity .25s; pointer-events: none;
 }
 .player-bar > * { pointer-events: auto; }
 .player.idle .player-bar { opacity: 0; pointer-events: none; }
-.player-info { flex: 1; min-width: 0; display: grid; }
+.player.idle .player-bar > * { pointer-events: none; }
+.player-bar .icon {
+  width: 56px; height: 56px; flex: none; border-radius: 50%; color: #fff;
+  background: rgba(30, 30, 34, .62); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+.player-bar .icon svg { width: 30px; height: 30px; }
+.player-info { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .player-info strong, .player-info span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player-info span { color: #ccc; font-size: 13px; }
+.player-info strong { font-size: 19px; text-shadow: 0 1px 4px #000a; }
+.player-info span { color: #ddd; font-size: 14px; text-shadow: 0 1px 4px #000a; }
 .player .error { white-space: pre-line; word-break: break-word; position: absolute; left: 16px; right: 16px; bottom: calc(var(--safe-b) + 90px); background: #000c; padding: 12px; border-radius: 10px; text-align: center; }
 
 dialog { border: 0; padding: 0; background: transparent; color: var(--text); width: min(420px, calc(100% - 32px)); }

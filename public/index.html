@@ -87,13 +87,15 @@
     <section id="player" class="player" hidden>
       <video id="video" playsinline webkit-playsinline controls x-webkit-airplay="allow" autoplay></video>
       <div class="player-bar">
-        <button id="player-close" class="icon" aria-label="Schließen">✕</button>
+        <button id="player-close" class="icon" aria-label="Schließen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
         <div class="player-info">
           <strong id="player-title"></strong>
           <span id="player-sub"></span>
         </div>
         <button id="airplay" class="icon" aria-label="AirPlay" hidden>
-          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M6 22h12l-6-6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 22h12l-6-6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
         </button>
       </div>
       <p id="player-error" class="error" role="alert" hidden></p>

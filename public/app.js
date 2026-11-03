@@ -769,7 +769,7 @@ async function playStream(url, title, sub, liveId, alt) {
   $('#player-sub').textContent = sub || '';
   if (!layers.includes('player')) pushLayer('player');
   show($('#player'), true);
-  bumpControls();
+  showUi();
   attach([url, alt]);
 
   if (liveId) {
@@ -783,13 +783,32 @@ async function playStream(url, title, sub, liveId, alt) {
 
 $('#player-close').addEventListener('click', () => history.back());
 
-function bumpControls() {
-  $('#player').classList.remove('idle');
+/* Unsere Leiste (Titel, Schließen, AirPlay) soll mit Safaris eigenen Bedienelementen verschwinden.
+   Safari verrät deren Zustand nicht, daher spiegeln wir das Verhalten: Ein Tipp aufs Bild blendet
+   bei sichtbarer Leiste aus, bei versteckter ein. Außerdem blendet sie sich nach einigen Sekunden aus. */
+const UI_HIDE_MS = 3500;
+const playerEl = $('#player');
+
+function showUi() {
+  playerEl.classList.remove('idle');
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { if (!video.paused) $('#player').classList.add('idle'); }, 3500);
+  if (!video.paused) idleTimer = setTimeout(hideUi, UI_HIDE_MS);
 }
-for (const ev of ['pointermove', 'pointerdown', 'keydown']) $('#player').addEventListener(ev, bumpControls);
-video.addEventListener('pause', bumpControls);
+
+function hideUi() {
+  clearTimeout(idleTimer);
+  if (!video.paused) playerEl.classList.add('idle');
+}
+
+playerEl.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.player-bar button')) { showUi(); return; }
+  if (playerEl.classList.contains('idle') || video.paused) showUi(); else hideUi();
+});
+// Maus (Desktop): Bewegung blendet ein. Bei Touch nicht, sonst kommt die Leiste nach dem Ausblenden-Tipp zurück.
+playerEl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') showUi(); });
+playerEl.addEventListener('keydown', showUi);
+video.addEventListener('play', showUi);
+video.addEventListener('pause', showUi);
 
 // AirPlay (nur Safari/WebKit): Button erscheint, sobald ein Ziel (Apple TV) erreichbar ist.
 if (window.WebKitPlaybackTargetAvailabilityEvent) {
