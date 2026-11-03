@@ -32,7 +32,6 @@ const store = {
 let cfg = store.get('cfg', null);
 let favs = new Set(store.get('favs', []));
 const data = {}; // type -> { cats: [], items: [] }
-let tab = 'live';
 let filtered = [];
 let shown = 0;
 
@@ -98,7 +97,7 @@ const idb = (() => {
 })();
 
 const CACHE_TTL = 6 * 3600 * 1000; // danach werden Listen im Hintergrund aktualisiert
-const cacheKey = (type) => `v1|${cfg.server}|${cfg.username}|${type}`;
+const cacheKey = (type) => `v2|${cfg.server}|${cfg.username}|${type}`;
 
 /* ---------- Spracherkennung ---------- */
 
@@ -175,6 +174,13 @@ $('#login-form').addEventListener('submit', async (e) => {
 
 /* ---------- Listen ---------- */
 
+function ratingStars(x) {
+  const five = Number(x.rating_5based);
+  const ten = Number(x.rating);
+  const r = five > 0 ? five : ten > 0 ? ten / 2 : 0;
+  return Math.min(5, Math.round(r * 10) / 10);
+}
+
 async function fetchType(type) {
   const def = TYPES[type];
   const [cats, items] = await Promise.all([api(def.cats), api(def.items)]);
@@ -192,7 +198,9 @@ async function fetchType(type) {
         icon: x.stream_icon || x.cover || '',
         cat,
         ext: x.container_extension || 'mp4',
-        added: Number(x.added) || 0,
+        added: Number(x.added || x.last_modified) || 0,
+        rating5: ratingStars(x),
+        genre: x.genre ? String(x.genre) : (type === 'series' ? '' : undefined), // undefined = unbekannt (Filme)
         lang: detectLang(name, false) || detectLang(catName.get(cat) || '', true), // Markierung im Titel ist genauer als die Kategorie
       };
     }),
@@ -216,7 +224,7 @@ async function loadType(type) {
 
 function refreshInBackground(type) {
   fetchType(type).then(() => {
-    if (tab === type || tab === 'fav') { saveView(); renderTab(); }
+    if (nav.section === type || nav.section === 'fav') { saveView(); render(); }
   }).catch(() => { /* alte Liste bleibt gültig */ });
 }
 
@@ -226,19 +234,210 @@ function setStatus(text) {
   show(s, Boolean(text));
 }
 
-/* Ansicht pro Tab merken: Kategorie, Suche, Filter, Scrollposition */
+/* ---------- Navigation: Start -> Bereich -> Anbieter/Kategorie -> Liste ---------- */
+
+const SECTIONS = { live: 'Live', vod: 'Filme', series: 'Serien', fav: 'Favoriten' };
+const GROUPED = new Set(['vod', 'series']); // hier gibt es erst eine Auswahl nach Anbieter
+const nav = { section: null, group: null }; // group: { id, label, catIds: Set | null }
+const providers = (window.PROVIDERS || []).map((p) => ({ ...p, rx: new RegExp(p.re, 'i') }));
+const isGroupsScreen = () => GROUPED.has(nav.section) && !nav.group;
+
+/* Bewertung in Sternen (rating5 = Wert von 0 bis 5). Vorerst zählt nur die ganze Zahl:
+   3,2 und 3,5 sind 3 Sterne, auch 3,9 bleibt bei 3. Hier ändern, falls später anders gerundet werden soll. */
+const starBucket = (it) => Math.min(5, Math.floor(it.rating5 || 0));
+const fmtRating = (r) => r.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const genreList = (it) => String(it.genre || '').split(/[,/|]/).map((g) => g.trim()).filter(Boolean);
+
+/* Ansicht pro Liste merken: Filter, Suche, Scrollposition */
 const view = {};
-const getView = (t) => (view[t] ||= { cat: '', q: '', sort: '', playable: '', lang: '', scroll: 0, shown: PAGE_SIZE });
+const viewKey = () => `${nav.section}:${nav.group?.id ?? '*'}`;
+const getView = (key = viewKey()) => (view[key] ||= {
+  cat: '', q: '', sort: '', playable: '', lang: '', genre: '', rating: '', scroll: 0, shown: PAGE_SIZE, filters: false,
+});
 
 function saveView() {
-  const v = getView(tab);
+  if (!nav.section) return;
+  if (isGroupsScreen()) { (view[`groups:${nav.section}`] ||= {}).scroll = window.scrollY; return; }
+  const v = getView();
   v.cat = $('#category').value;
   v.q = $('#search').value;
   v.sort = $('#sort').value;
   v.playable = $('#playable').value;
   v.lang = $('#lang').value;
+  v.genre = $('#genre').value;
+  v.rating = $('#rating').value;
   v.scroll = window.scrollY;
   v.shown = shown;
+}
+
+async function render() {
+  const { section, group } = nav;
+  const groups = isGroupsScreen();
+  if (genreJob) genreJob.cancel = true;
+  show($('#home'), !section);
+  show($('#groups'), Boolean(section) && groups);
+  show($('#listview'), Boolean(section) && !groups);
+  show($('#nav-back'), Boolean(section));
+  $('#nav-title').textContent = !section ? 'PlayerIP' : group ? group.label : SECTIONS[section];
+  if (!section) { window.scrollTo(0, 0); return; }
+  if (groups) await renderGroups(); else await renderList();
+}
+
+function openSection(section) {
+  saveView();
+  nav.section = section;
+  nav.group = null;
+  pushLayer('section');
+  render();
+}
+
+function openGroup(group) {
+  saveView();
+  nav.group = group;
+  pushLayer('group');
+  render();
+}
+
+$('#nav-back').addEventListener('click', () => history.back());
+$('#home').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-section]');
+  if (b) openSection(b.dataset.section);
+});
+
+/* ---------- Anbieter-Kacheln ---------- */
+
+const countCache = new WeakMap();
+function categoryCounts(d) {
+  if (!countCache.has(d)) {
+    const m = new Map();
+    for (const it of d.items) m.set(it.cat, (m.get(it.cat) || 0) + 1);
+    countCache.set(d, m);
+  }
+  return countCache.get(d);
+}
+
+let currentGroups = new Map();
+let moreOpen = false;
+
+function tileEl(g) {
+  const p = g.provider;
+  const b = el('button', 'tile');
+  b.type = 'button';
+  b.dataset.gid = g.id;
+  b.setAttribute('aria-label', `${g.label}, ${g.count}`);
+  b.style.setProperty('--tile-bg', p.bg);
+  b.style.setProperty('--tile-fg', p.fg);
+  if (p.icon) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', p.icon);
+    svg.append(path);
+    b.append(svg);
+  } else {
+    b.append(el('span', 'word', p.word || p.label));
+  }
+  b.append(el('span', 'count', String(g.count)));
+  return b;
+}
+
+function barEl(g) {
+  const b = el('button', 'bar');
+  b.type = 'button';
+  b.dataset.gid = g.id;
+  b.append(el('span', null, g.label), el('span', 'count', String(g.count)));
+  return b;
+}
+
+async function renderGroups() {
+  const section = nav.section;
+  const status = $('#groups-status');
+  const stale = () => nav.section !== section || !isGroupsScreen();
+  $('#tiles').replaceChildren();
+  $('#all-wrap').replaceChildren();
+  $('#more-list').replaceChildren();
+  show($('#more'), false);
+  status.textContent = 'Lade …';
+  show(status, true);
+
+  try {
+    const d = await loadType(section);
+    if (stale()) return;
+    const counts = categoryCounts(d);
+    const used = new Set();
+    const tiles = [];
+    for (const p of providers) {
+      const ids = new Set(d.cats
+        .filter((c) => !used.has(String(c.category_id)) && p.rx.test(String(c.category_name || '')))
+        .map((c) => String(c.category_id)));
+      const count = [...ids].reduce((n, id) => n + (counts.get(id) || 0), 0);
+      if (!count) continue;
+      ids.forEach((id) => used.add(id));
+      tiles.push({ id: `p:${p.id}`, label: p.label, catIds: ids, count, provider: p });
+    }
+    const rest = d.cats
+      .filter((c) => !used.has(String(c.category_id)) && (counts.get(String(c.category_id)) || 0) > 0)
+      .map((c) => ({ id: `c:${c.category_id}`, label: c.category_name || '(ohne Namen)', catIds: new Set([String(c.category_id)]), count: counts.get(String(c.category_id)) }));
+    const all = { id: 'all', label: section === 'vod' ? 'Alle Filme' : 'Alle Serien', catIds: null, count: d.items.length };
+
+    currentGroups = new Map([...tiles, ...rest, all].map((g) => [g.id, g]));
+    $('#tiles').replaceChildren(...tiles.map(tileEl));
+    $('#all-wrap').replaceChildren(barEl(all));
+    if (rest.length) {
+      $('#more-title').textContent = `Weitere Kategorien (${rest.length})`;
+      $('#more-list').replaceChildren(...rest.map(barEl));
+      $('#more').open = moreOpen || tiles.length === 0;
+      show($('#more'), true);
+    }
+    show(status, false);
+    window.scrollTo(0, view[`groups:${section}`]?.scroll || 0);
+  } catch (ex) {
+    if (!stale()) status.textContent = `Laden fehlgeschlagen: ${ex.message}`;
+  }
+}
+
+$('#groups').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-gid]');
+  const g = b && currentGroups.get(b.dataset.gid);
+  if (g) openGroup(g);
+});
+$('#more').addEventListener('toggle', () => { moreOpen = $('#more').open; });
+
+/* ---------- Liste ---------- */
+
+let pool = []; // Basis der aktuellen Liste, bevor Filter greifen
+
+function poolFor() {
+  if (nav.section === 'fav') return Object.values(data).flatMap((d) => d.items).filter((it) => favs.has(favKey(it)));
+  const items = data[nav.section].items;
+  const ids = nav.group?.catIds;
+  return ids ? items.filter((it) => ids.has(it.cat)) : items;
+}
+
+async function renderList() {
+  const section = nav.section;
+  const group = nav.group;
+  const stale = () => nav.section !== section || nav.group !== group || isGroupsScreen();
+  if (section === 'fav' || !data[section]) $('#list').replaceChildren();
+  setStatus('Lade …');
+
+  try {
+    if (section === 'fav') await Promise.all(Object.keys(TYPES).map((t) => loadType(t)));
+    else await loadType(section);
+    if (stale()) return;
+    pool = poolFor();
+    buildControls(getView());
+    applyFilter({ restore: true });
+  } catch (ex) {
+    if (!stale()) setStatus(`Laden fehlgeschlagen: ${ex.message}`);
+  }
+}
+
+function fillSelect(sel, first, options, selected) {
+  sel.replaceChildren(new Option(first, ''), ...options.map(([value, label]) => new Option(label, value)));
+  sel.value = selected;
+  sel.hidden = options.length === 0;
 }
 
 function buildLangOptions(items, selected) {
@@ -248,81 +447,158 @@ function buildLangOptions(items, selected) {
     if (it.lang) counts[it.lang] = (counts[it.lang] || 0) + 1; else without += 1;
   }
   const codes = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
-  const sel = $('#lang');
-  sel.replaceChildren(
-    new Option('Alle Sprachen', ''),
-    ...codes.map((c) => new Option(`${LANGS[c].label} (${counts[c]})`, c)),
-    ...(codes.length && without ? [new Option(`Ohne erkannte Sprache (${without})`, '-')] : []),
-  );
-  sel.value = selected;
-  sel.hidden = codes.length === 0;
+  const opts = codes.map((c) => [c, `${LANGS[c].label} (${counts[c]})`]);
+  if (codes.length && without) opts.push(['-', `Ohne erkannte Sprache (${without})`]);
+  fillSelect($('#lang'), 'Alle Sprachen', opts, selected);
 }
 
-async function renderTab() {
-  const t = tab;
-  const sel = $('#category');
-  const v = getView(t);
-  if (t === 'fav' || !data[t]) $('#list').replaceChildren();
-  setStatus('Lade …');
-
-  try {
-    let items = [];
-    if (t === 'fav') {
-      await Promise.all(Object.keys(TYPES).map(loadType));
-      if (t !== tab) return;
-      sel.replaceChildren(new Option('Alle Favoriten', ''));
-    } else {
-      const d = await loadType(t);
-      if (t !== tab) return;
-      sel.replaceChildren(new Option('Alle Kategorien', ''), ...d.cats.map((c) => new Option(c.category_name, c.category_id)));
-      items = d.items;
+function buildGenreOptions(items, selected) {
+  const names = new Map(); // klein -> Anzeigename
+  const counts = new Map();
+  for (const it of items) {
+    for (const g of genreList(it)) {
+      const k = g.toLowerCase();
+      if (!names.has(k)) names.set(k, g);
+      counts.set(k, (counts.get(k) || 0) + 1);
     }
-    sel.value = v.cat;
-    sel.disabled = t === 'fav';
-    $('#search').value = v.q;
-    buildLangOptions(items, v.lang);
-    $('#sort').value = v.sort;
-    $('#playable').value = v.playable;
-    const isVod = t === 'vod';
-    $('#sort').hidden = !isVod;
-    $('#playable').hidden = !isVod;
-    show($('#extra-filters'), t !== 'fav' && (isVod || !$('#lang').hidden));
-    applyFilter({ restore: true });
-  } catch (ex) {
-    if (t === tab) setStatus(`Laden fehlgeschlagen: ${ex.message}`);
   }
+  const opts = [...names].sort((a, b) => a[1].localeCompare(b[1], 'de')).map(([k, n]) => [k, `${n} (${counts.get(k)})`]);
+  fillSelect($('#genre'), 'Alle Genres', opts, selected);
 }
+
+function buildRatingOptions(items, selected) {
+  const counts = [0, 0, 0, 0, 0, 0];
+  for (const it of items) counts[starBucket(it)] += 1;
+  const label = (n) => (n === 0 ? 'Ohne Bewertung' : `${n} ${n === 1 ? 'Stern' : 'Sterne'}`);
+  const opts = [5, 4, 3, 2, 1, 0].filter((n) => counts[n]).map((n) => [String(n), `${label(n)} (${counts[n]})`]);
+  fillSelect($('#rating'), 'Alle Bewertungen', opts, selected);
+}
+
+function buildControls(v) {
+  const section = nav.section;
+  const content = section === 'vod' || section === 'series';
+
+  // Kategorie nur, wenn die Auswahl mehrere enthält (Live: alle Kategorien)
+  let cats = [];
+  if (section === 'live') cats = data.live.cats;
+  else if (content && nav.group?.catIds && nav.group.catIds.size > 1) cats = data[section].cats.filter((c) => nav.group.catIds.has(String(c.category_id)));
+  fillSelect($('#category'), 'Alle Kategorien', cats.map((c) => [String(c.category_id), c.category_name]), v.cat);
+
+  if (section === 'fav') {
+    for (const id of ['#lang', '#genre', '#rating', '#sort', '#playable']) $(id).hidden = true;
+  } else {
+    buildLangOptions(pool, v.lang);
+    if (content) { buildGenreOptions(pool, v.genre); buildRatingOptions(pool, v.rating); } else { $('#genre').hidden = true; $('#rating').hidden = true; }
+    const sorts = {
+      vod: [['name', 'Name A–Z'], ['new', 'Neueste zuerst'], ['rating', 'Beste Bewertung'], ['playable', 'Abspielbare zuerst']],
+      series: [['name', 'Name A–Z'], ['new', 'Neueste zuerst'], ['rating', 'Beste Bewertung']],
+      live: [['name', 'Name A–Z']],
+    }[section];
+    fillSelect($('#sort'), 'Standard-Sortierung', sorts, v.sort);
+    $('#playable').value = v.playable;
+    $('#playable').hidden = section !== 'vod';
+  }
+  $('#search').value = v.q;
+  updateGenreLoad();
+  setFiltersOpen(v.filters);
+}
+
+function setFiltersOpen(open) {
+  getView().filters = open;
+  $('#filter-toggle').setAttribute('aria-expanded', String(open));
+  show($('#filter-panel'), open);
+}
+
+function updateFilterBadge() {
+  const n = ['#category', '#lang', '#genre', '#rating', '#sort', '#playable'].filter((id) => !$(id).hidden && $(id).value).length;
+  const badge = $('#filter-badge');
+  badge.textContent = String(n);
+  show(badge, n > 0);
+}
+
+$('#filter-toggle').addEventListener('click', () => setFiltersOpen($('#filter-toggle').getAttribute('aria-expanded') !== 'true'));
 
 function applyFilter({ restore = false } = {}) {
   const q = $('#search').value.trim().toLowerCase();
   const cat = $('#category').value;
   const lang = $('#lang').value;
-  const pool = tab === 'fav'
-    ? Object.values(data).flatMap((d) => d.items).filter((it) => favs.has(favKey(it)))
-    : data[tab].items;
-  const onlyPlayable = tab === 'vod' && $('#playable').value === '1';
+  const genre = $('#genre').value;
+  const rating = $('#rating').value;
+  const onlyPlayable = nav.section === 'vod' && $('#playable').value === '1';
+  if (nav.section === 'fav') pool = poolFor();
+
   filtered = pool.filter((it) => (!cat || it.cat === cat)
     && (!lang || (lang === '-' ? !it.lang : it.lang === lang))
+    && (!genre || genreList(it).some((g) => g.toLowerCase() === genre))
+    && (!rating || String(starBucket(it)) === rating)
     && (!q || it.name.toLowerCase().includes(q))
     && (!onlyPlayable || isPlayable(it)));
-  if (tab === 'vod') {
-    const sort = $('#sort').value;
-    if (sort === 'name') filtered.sort((a, b) => a.name.localeCompare(b.name, 'de'));
-    else if (sort === 'new') filtered.sort((a, b) => b.added - a.added);
-    else if (sort === 'playable') filtered.sort((a, b) => Number(isPlayable(b)) - Number(isPlayable(a)));
-  }
+
+  const sort = $('#sort').hidden ? '' : $('#sort').value;
+  if (sort === 'name') filtered.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  else if (sort === 'new') filtered.sort((a, b) => b.added - a.added);
+  else if (sort === 'rating') filtered.sort((a, b) => (b.rating5 || 0) - (a.rating5 || 0));
+  else if (sort === 'playable') filtered.sort((a, b) => Number(isPlayable(b)) - Number(isPlayable(a)));
 
   const list = $('#list');
   list.replaceChildren();
-  list.classList.toggle('grid', tab !== 'live' && tab !== 'fav' && TYPES[tab].grid);
+  list.classList.toggle('grid', nav.section === 'vod' || nav.section === 'series');
   setStatus(filtered.length ? '' : 'Nichts gefunden.');
+  updateFilterBadge();
 
-  const v = getView(tab);
+  const v = getView();
   const target = restore ? v.shown : PAGE_SIZE;
   shown = 0;
   do { renderMore(); } while (shown < target && shown < filtered.length);
   window.scrollTo(0, restore ? v.scroll : 0);
 }
+
+/* Genres: Die Filmliste enthält keine Genres, sie stehen nur in den Einzelinfos. Auf Wunsch holen wir sie für die
+   aktuelle Auswahl (4 Anfragen gleichzeitig) und speichern sie, damit das nur einmal nötig ist. */
+let genreJob = null;
+
+function updateGenreLoad() {
+  const missing = nav.section === 'vod' ? pool.filter((it) => it.type === 'vod' && it.genre === undefined).length : 0;
+  show($('#genre-load'), missing > 0 || Boolean(genreJob));
+  if (!genreJob) {
+    $('#genre-load-text').textContent = `Genres sind nur einzeln abrufbar (${missing} Filme).`;
+    $('#genre-load-btn').textContent = 'Genres laden';
+    $('#genre-load-info').textContent = '';
+  }
+}
+
+$('#genre-load-btn').addEventListener('click', async () => {
+  if (genreJob) { genreJob.cancel = true; return; }
+  const todo = pool.filter((it) => it.type === 'vod' && it.genre === undefined);
+  if (!todo.length) return;
+  const job = { cancel: false };
+  genreJob = job;
+  const total = todo.length;
+  let done = 0;
+  let errors = 0;
+  $('#genre-load-btn').textContent = 'Abbrechen';
+  const worker = async () => {
+    while (!job.cancel && errors < 5) {
+      const it = todo.shift();
+      if (!it) return;
+      try {
+        const r = await api('get_vod_info', { vod_id: it.id });
+        it.genre = String(r?.info?.genre || '').trim();
+        errors = 0;
+      } catch { errors += 1; }
+      done += 1;
+      $('#genre-load-info').textContent = `${done} / ${total}`;
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  genreJob = null;
+  idb.set(cacheKey('vod'), { ts: Date.now(), d: data.vod });
+  if (nav.section === 'vod') {
+    buildGenreOptions(pool, $('#genre').value);
+    updateGenreLoad();
+    if (errors >= 5) $('#genre-load-info').textContent = 'Abgebrochen: Der Anbieter antwortet nicht.';
+  }
+});
 
 function iconSrc(url) {
   if (!url) return '';
@@ -347,9 +623,9 @@ function renderMore() {
     if (it.icon) img.src = iconSrc(it.icon);
     img.addEventListener('error', () => { img.style.visibility = 'hidden'; });
 
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = it.name;
+    const text = el('div', 'text');
+    text.append(el('span', 'name', it.name));
+    if (it.rating5 > 0) text.append(el('span', 'sub stars', `★ ${fmtRating(it.rating5)}`));
 
     const fav = document.createElement('button');
     fav.className = `fav${favs.has(favKey(it)) ? ' on' : ''}`;
@@ -357,18 +633,14 @@ function renderMore() {
     fav.textContent = '★';
     fav.setAttribute('aria-label', 'Favorit');
 
-    li.append(img, name);
+    li.append(img, text);
     if (it.lang) {
-      const l = document.createElement('span');
-      l.className = 'fmt lang';
-      l.textContent = it.lang;
+      const l = el('span', 'fmt lang', it.lang);
       l.title = LANGS[it.lang].label;
       li.append(l);
     }
     if (it.type === 'vod') {
-      const fmt = document.createElement('span');
-      fmt.className = `fmt ${fmtClass(it.ext)}`;
-      fmt.textContent = String(it.ext).toUpperCase();
+      const fmt = el('span', `fmt ${fmtClass(it.ext)}`, String(it.ext).toUpperCase());
       fmt.title = fmtTitle(it.ext);
       li.append(fmt);
     }
@@ -397,7 +669,7 @@ $('#list').addEventListener('click', (e) => {
     const k = favKey(it);
     if (favs.has(k)) favs.delete(k); else favs.add(k);
     store.set('favs', [...favs]);
-    if (tab === 'fav') { saveView(); applyFilter({ restore: true }); }
+    if (nav.section === 'fav') { saveView(); applyFilter({ restore: true }); }
     else e.target.closest('.fav').classList.toggle('on', favs.has(k));
     return;
   }
@@ -411,16 +683,7 @@ $('#list').addEventListener('keydown', (e) => {
   }
 });
 
-$('#tabs').addEventListener('click', (e) => {
-  const b = e.target.closest('button[data-tab]');
-  if (!b || b.dataset.tab === tab) return;
-  saveView(); // Kategorie, Suche und Scrollposition des alten Tabs merken
-  tab = b.dataset.tab;
-  for (const t of document.querySelectorAll('#tabs button')) t.setAttribute('aria-selected', String(t === b));
-  renderTab();
-});
-
-for (const id of ['#category', '#sort', '#playable', '#lang']) $(id).addEventListener('change', () => applyFilter());
+for (const id of ['#category', '#sort', '#playable', '#lang', '#genre', '#rating']) $(id).addEventListener('change', () => applyFilter());
 let searchTimer;
 $('#search').addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -447,7 +710,9 @@ function pushLayer(name) {
 window.addEventListener('popstate', () => {
   const name = layers.pop();
   if (name === 'player') teardownPlayer();
-  if (name === 'detail') show($('#detail'), false);
+  else if (name === 'detail') show($('#detail'), false);
+  else if (name === 'group') { saveView(); nav.group = null; render(); }
+  else if (name === 'section') { saveView(); nav.section = null; nav.group = null; render(); }
 });
 
 /* ---------- Detailseite (Filme & Serien) ---------- */
@@ -834,7 +1099,7 @@ $('#refresh-btn').addEventListener('click', async () => {
   detailCache.clear();
   await idb.clear();
   $('#settings').close();
-  renderTab();
+  render();
 });
 $('#logout-btn').addEventListener('click', async () => {
   store.del('cfg');
@@ -846,7 +1111,7 @@ $('#logout-btn').addEventListener('click', async () => {
 
 function startBrowse() {
   showScreen('browse');
-  renderTab();
+  render();
 }
 
 if (cfg?.server && cfg.key) startBrowse(); else showScreen('login');
