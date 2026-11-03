@@ -761,6 +761,18 @@ function el(tag, cls, text) {
   return e;
 }
 
+// "Serie (MULTI) - S01E01 - Episode 1" -> "Episode 1": Serienname und Staffel stehen schon darüber.
+function episodeTitle(raw, seriesName, num) {
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let t = String(raw || '').trim();
+  const marked = t.match(/\bS\d+\s*E\d+\b\s*[-–:|]*\s*(.*)$/i); // alles nach "S01E01"
+  if (marked) t = marked[1];
+  else if (seriesName) t = t.replace(new RegExp(`^${esc(seriesName.trim())}\\s*[-–:|]*\\s*`, 'i'), '');
+  t = t.replace(/^[-–:|\s]+/, '').trim();
+  if (!t) return `Episode ${num ?? ''}`.trim();
+  return /^(episode|folge)\s*\d+$/i.test(t) || !num ? t : `${num}. ${t}`;
+}
+
 const toArray = (x) => {
   if (Array.isArray(x)) return x;
   return x && typeof x === 'object' && Object.keys(x).length ? [x] : [];
@@ -879,7 +891,7 @@ async function openSeries(it) {
         const row = el('div', 'item');
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
-        const label = el('span', 'name', `${ep.episode_num ?? ''}. ${ep.title || 'Episode'}`);
+        const label = el('span', 'name', episodeTitle(ep.title, it.name, ep.episode_num));
         const epExt = ep.container_extension || 'mp4';
         row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()));
         const go = () => playStream(
