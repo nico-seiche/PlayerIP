@@ -65,6 +65,73 @@ function decodeB64(s) {
 function show(el, on) { el.hidden = !on; }
 const favKey = (it) => `${it.type}:${it.id}`;
 
+/* ---------- Zwischenspeicher (IndexedDB) ---------- */
+
+const idb = (() => {
+  let dbp;
+  const open = () => (dbp ||= new Promise((resolve, reject) => {
+    const r = indexedDB.open('playerip', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+  const run = async (mode, fn) => {
+    try {
+      const db = await open();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction('kv', mode);
+        const req = fn(tx.objectStore('kv'));
+        tx.oncomplete = () => resolve(req?.result);
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch { return undefined; } // z. B. privater Modus: dann eben ohne Cache
+  };
+  return {
+    get: (k) => run('readonly', (s) => s.get(k)),
+    set: (k, v) => run('readwrite', (s) => s.put(v, k)),
+    clear: () => run('readwrite', (s) => s.clear()),
+  };
+})();
+
+const CACHE_TTL = 6 * 3600 * 1000; // danach werden Listen im Hintergrund aktualisiert
+const cacheKey = (type) => `v1|${cfg.server}|${cfg.username}|${type}`;
+
+/* ---------- Spracherkennung ---------- */
+
+const LANGS = {
+  DE: { label: 'Deutsch', keys: ['de', 'ger', 'deu', 'german', 'deutsch', 'deutsche', 'germany', 'deutschland'] },
+  EN: { label: 'Englisch', keys: ['en', 'eng', 'english', 'uk', 'us', 'usa', 'gb', 'englisch'] },
+  TR: { label: 'Türkisch', keys: ['tr', 'tur', 'turkish', 'turk', 'türkisch', 'turkey', 'türkei'] },
+  FR: { label: 'Französisch', keys: ['fr', 'fra', 'fre', 'french', 'france', 'französisch'] },
+  ES: { label: 'Spanisch', keys: ['es', 'esp', 'spa', 'spanish', 'spain', 'spanisch', 'español'] },
+  IT: { label: 'Italienisch', keys: ['it', 'ita', 'italian', 'italy', 'italienisch', 'italiano'] },
+  NL: { label: 'Niederländisch', keys: ['nl', 'dut', 'dutch', 'netherlands', 'niederländisch'] },
+  PL: { label: 'Polnisch', keys: ['pl', 'pol', 'polish', 'poland', 'polnisch'] },
+  RU: { label: 'Russisch', keys: ['ru', 'rus', 'russian', 'russia', 'russisch'] },
+  AR: { label: 'Arabisch', keys: ['ar', 'ara', 'arabic', 'arabisch'] },
+  PT: { label: 'Portugiesisch', keys: ['pt', 'por', 'portuguese', 'portugal', 'portugiesisch'] },
+};
+const LOOKUP = new Map(Object.entries(LANGS).flatMap(([code, l]) => l.keys.map((k) => [k, code])));
+const langLabel = (code) => LANGS[LOOKUP.get(String(code || '').toLowerCase())]?.label || '';
+
+// loose=true für Kategorienamen (kurz, aussagekräftig), false für Filmtitel (nur eindeutige Markierungen).
+// Kurzkürzel wie "de" zählen nur in Klammern/Pipes oder am Anfang/Ende, damit "Films de France" nicht als Deutsch gilt.
+function detectLang(text, loose) {
+  const t = String(text).toLowerCase();
+  const tokens = t.split(/[^a-zäöüß]+/).filter(Boolean);
+  if (loose) {
+    for (const w of tokens) if (w.length > 3 && LOOKUP.has(w)) return LOOKUP.get(w);
+  }
+  const marker = /[[(|]\s*([a-zäöüß]{2,10})\s*[\])|]/g;
+  for (let m; (m = marker.exec(t));) if (LOOKUP.has(m[1])) return LOOKUP.get(m[1]);
+  const prefix = t.match(/^\s*([a-zäöüß]{2,10})\s*[:|\-–]/);
+  if (prefix && LOOKUP.has(prefix[1])) return LOOKUP.get(prefix[1]);
+  if (loose) {
+    for (const w of [tokens[0], tokens[tokens.length - 1]]) if (w && LOOKUP.has(w)) return LOOKUP.get(w);
+  }
+  return '';
+}
+
 /* ---------- Login ---------- */
 
 function showScreen(name) {
@@ -104,23 +171,49 @@ $('#login-form').addEventListener('submit', async (e) => {
 
 /* ---------- Listen ---------- */
 
-async function loadType(type) {
-  if (data[type]) return data[type];
+async function fetchType(type) {
   const def = TYPES[type];
   const [cats, items] = await Promise.all([api(def.cats), api(def.items)]);
-  data[type] = {
-    cats: Array.isArray(cats) ? cats : [],
-    items: (Array.isArray(items) ? items : []).map((x) => ({
-      type,
-      id: x.stream_id ?? x.series_id,
-      name: x.name || '(ohne Namen)',
-      icon: x.stream_icon || x.cover || '',
-      cat: String(x.category_id ?? ''),
-      ext: x.container_extension || 'mp4',
-      added: Number(x.added) || 0,
-    })),
+  const catList = Array.isArray(cats) ? cats : [];
+  const catName = new Map(catList.map((c) => [String(c.category_id), c.category_name || '']));
+  const d = {
+    cats: catList,
+    items: (Array.isArray(items) ? items : []).map((x) => {
+      const cat = String(x.category_id ?? '');
+      const name = x.name || '(ohne Namen)';
+      return {
+        type,
+        id: x.stream_id ?? x.series_id,
+        name,
+        icon: x.stream_icon || x.cover || '',
+        cat,
+        ext: x.container_extension || 'mp4',
+        added: Number(x.added) || 0,
+        lang: detectLang(name, false) || detectLang(catName.get(cat) || '', true), // Markierung im Titel ist genauer als die Kategorie
+      };
+    }),
   };
-  return data[type];
+  data[type] = d;
+  idb.set(cacheKey(type), { ts: Date.now(), d });
+  return d;
+}
+
+// Erst aus dem Speicher, dann aus dem Zwischenspeicher; nur sonst (oder bei force) vom Server.
+async function loadType(type) {
+  if (data[type]) return data[type];
+  const hit = await idb.get(cacheKey(type));
+  if (hit?.d) {
+    data[type] = hit.d;
+    if (Date.now() - hit.ts > CACHE_TTL) refreshInBackground(type);
+    return hit.d;
+  }
+  return fetchType(type);
+}
+
+function refreshInBackground(type) {
+  fetchType(type).then(() => {
+    if (tab === type || tab === 'fav') { saveView(); renderTab(); }
+  }).catch(() => { /* alte Liste bleibt gültig */ });
 }
 
 function setStatus(text) {
@@ -129,54 +222,102 @@ function setStatus(text) {
   show(s, Boolean(text));
 }
 
+/* Ansicht pro Tab merken: Kategorie, Suche, Filter, Scrollposition */
+const view = {};
+const getView = (t) => (view[t] ||= { cat: '', q: '', sort: '', playable: '', lang: '', scroll: 0, shown: PAGE_SIZE });
+
+function saveView() {
+  const v = getView(tab);
+  v.cat = $('#category').value;
+  v.q = $('#search').value;
+  v.sort = $('#sort').value;
+  v.playable = $('#playable').value;
+  v.lang = $('#lang').value;
+  v.scroll = window.scrollY;
+  v.shown = shown;
+}
+
+function buildLangOptions(items, selected) {
+  const counts = {};
+  let without = 0;
+  for (const it of items) {
+    if (it.lang) counts[it.lang] = (counts[it.lang] || 0) + 1; else without += 1;
+  }
+  const codes = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const sel = $('#lang');
+  sel.replaceChildren(
+    new Option('Alle Sprachen', ''),
+    ...codes.map((c) => new Option(`${LANGS[c].label} (${counts[c]})`, c)),
+    ...(codes.length && without ? [new Option(`Ohne erkannte Sprache (${without})`, '-')] : []),
+  );
+  sel.value = selected;
+  sel.hidden = codes.length === 0;
+}
+
 async function renderTab() {
-  const list = $('#list');
+  const t = tab;
   const sel = $('#category');
-  list.replaceChildren();
+  const v = getView(t);
+  if (t === 'fav' || !data[t]) $('#list').replaceChildren();
   setStatus('Lade …');
 
   try {
-    if (tab === 'fav') {
+    let items = [];
+    if (t === 'fav') {
       await Promise.all(Object.keys(TYPES).map(loadType));
+      if (t !== tab) return;
       sel.replaceChildren(new Option('Alle Favoriten', ''));
     } else {
-      const d = await loadType(tab);
-      const keep = sel.dataset.tab === tab ? sel.value : '';
+      const d = await loadType(t);
+      if (t !== tab) return;
       sel.replaceChildren(new Option('Alle Kategorien', ''), ...d.cats.map((c) => new Option(c.category_name, c.category_id)));
-      sel.value = keep;
+      items = d.items;
     }
-    sel.dataset.tab = tab;
-    sel.disabled = tab === 'fav';
-    applyFilter();
+    sel.value = v.cat;
+    sel.disabled = t === 'fav';
+    $('#search').value = v.q;
+    buildLangOptions(items, v.lang);
+    $('#sort').value = v.sort;
+    $('#playable').value = v.playable;
+    const isVod = t === 'vod';
+    $('#sort').hidden = !isVod;
+    $('#playable').hidden = !isVod;
+    show($('#extra-filters'), t !== 'fav' && (isVod || !$('#lang').hidden));
+    applyFilter({ restore: true });
   } catch (ex) {
-    setStatus(`Laden fehlgeschlagen: ${ex.message}`);
+    if (t === tab) setStatus(`Laden fehlgeschlagen: ${ex.message}`);
   }
 }
 
-function applyFilter() {
+function applyFilter({ restore = false } = {}) {
   const q = $('#search').value.trim().toLowerCase();
   const cat = $('#category').value;
-  let pool;
-  if (tab === 'fav') {
-    pool = Object.values(data).flatMap((d) => d.items).filter((it) => favs.has(favKey(it)));
-  } else {
-    pool = data[tab].items;
-  }
+  const lang = $('#lang').value;
+  const pool = tab === 'fav'
+    ? Object.values(data).flatMap((d) => d.items).filter((it) => favs.has(favKey(it)))
+    : data[tab].items;
   const onlyPlayable = tab === 'vod' && $('#playable').value === '1';
-  filtered = pool.filter((it) => (!cat || it.cat === cat) && (!q || it.name.toLowerCase().includes(q)) && (!onlyPlayable || isPlayable(it)));
+  filtered = pool.filter((it) => (!cat || it.cat === cat)
+    && (!lang || (lang === '-' ? !it.lang : it.lang === lang))
+    && (!q || it.name.toLowerCase().includes(q))
+    && (!onlyPlayable || isPlayable(it)));
   if (tab === 'vod') {
     const sort = $('#sort').value;
     if (sort === 'name') filtered.sort((a, b) => a.name.localeCompare(b.name, 'de'));
     else if (sort === 'new') filtered.sort((a, b) => b.added - a.added);
     else if (sort === 'playable') filtered.sort((a, b) => Number(isPlayable(b)) - Number(isPlayable(a)));
   }
-  shown = 0;
+
   const list = $('#list');
   list.replaceChildren();
-  show($('#vod-filters'), tab === 'vod');
   list.classList.toggle('grid', tab !== 'live' && tab !== 'fav' && TYPES[tab].grid);
   setStatus(filtered.length ? '' : 'Nichts gefunden.');
-  renderMore();
+
+  const v = getView(tab);
+  const target = restore ? v.shown : PAGE_SIZE;
+  shown = 0;
+  do { renderMore(); } while (shown < target && shown < filtered.length);
+  window.scrollTo(0, restore ? v.scroll : 0);
 }
 
 function iconSrc(url) {
@@ -212,15 +353,22 @@ function renderMore() {
     fav.textContent = '★';
     fav.setAttribute('aria-label', 'Favorit');
 
+    li.append(img, name);
+    if (it.lang) {
+      const l = document.createElement('span');
+      l.className = 'fmt lang';
+      l.textContent = it.lang;
+      l.title = LANGS[it.lang].label;
+      li.append(l);
+    }
     if (it.type === 'vod') {
       const fmt = document.createElement('span');
       fmt.className = `fmt ${isPlayable(it) ? 'ok' : 'bad'}`;
       fmt.textContent = String(it.ext).toUpperCase();
       fmt.title = isPlayable(it) ? 'Wird abgespielt' : 'Safari kann dieses Format evtl. nicht abspielen';
-      li.append(img, name, fmt, fav);
-    } else {
-      li.append(img, name, fav);
+      li.append(fmt);
     }
+    li.append(fav);
     frag.append(li);
   }
   shown += PAGE_SIZE;
@@ -245,7 +393,7 @@ $('#list').addEventListener('click', (e) => {
     const k = favKey(it);
     if (favs.has(k)) favs.delete(k); else favs.add(k);
     store.set('favs', [...favs]);
-    if (tab === 'fav') applyFilter();
+    if (tab === 'fav') { saveView(); applyFilter({ restore: true }); }
     else e.target.closest('.fav').classList.toggle('on', favs.has(k));
     return;
   }
@@ -262,28 +410,24 @@ $('#list').addEventListener('keydown', (e) => {
 $('#tabs').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-tab]');
   if (!b || b.dataset.tab === tab) return;
+  saveView(); // Kategorie, Suche und Scrollposition des alten Tabs merken
   tab = b.dataset.tab;
-  $('#search').value = '';
   for (const t of document.querySelectorAll('#tabs button')) t.setAttribute('aria-selected', String(t === b));
   renderTab();
 });
 
-$('#category').addEventListener('change', applyFilter);
-$('#sort').addEventListener('change', applyFilter);
-$('#playable').addEventListener('change', applyFilter);
+for (const id of ['#category', '#sort', '#playable', '#lang']) $(id).addEventListener('change', () => applyFilter());
 let searchTimer;
 $('#search').addEventListener('input', () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(applyFilter, 150);
+  searchTimer = setTimeout(() => applyFilter(), 150);
 });
 
 function openItem(it) {
-  const base = cfg.server;
-  const { username: u, password: p } = cfg;
   if (it.type === 'live') {
-    playStream(`${base}/live/${u}/${p}/${it.id}.m3u8`, it.name, '', it.id);
+    playStream(`${cfg.server}/live/${cfg.username}/${cfg.password}/${it.id}.m3u8`, it.name, '', it.id);
   } else if (it.type === 'vod') {
-    playStream(`${base}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null, `${base}/movie/${u}/${p}/${it.id}.m3u8`);
+    openMovie(it);
   } else {
     openSeries(it);
   }
@@ -299,43 +443,145 @@ function pushLayer(name) {
 window.addEventListener('popstate', () => {
   const name = layers.pop();
   if (name === 'player') teardownPlayer();
-  if (name === 'series') show($('#series-detail'), false);
+  if (name === 'detail') show($('#detail'), false);
 });
 
-/* ---------- Serien ---------- */
+/* ---------- Detailseite (Filme & Serien) ---------- */
 
-async function openSeries(it) {
-  $('#series-title').textContent = it.name;
-  const body = $('#series-body');
-  body.replaceChildren(Object.assign(document.createElement('p'), { className: 'status', textContent: 'Lade …' }));
-  if (!layers.includes('series')) pushLayer('series');
-  show($('#series-detail'), true);
+const detailCache = new Map();
+let detailToken = 0;
+
+async function cachedApi(key, action, params) {
+  if (!detailCache.has(key)) detailCache.set(key, await api(action, params));
+  return detailCache.get(key);
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+const toArray = (x) => {
+  if (Array.isArray(x)) return x;
+  return x && typeof x === 'object' && Object.keys(x).length ? [x] : [];
+};
+const BAD_AUDIO = new Set(['dts', 'truehd', 'dca', 'mlp']); // Safari spielt diese Tonformate nicht
+const pick = (...vals) => vals.find((v) => v != null && String(v).trim() !== '' && String(v) !== '0');
+
+function openDetail(title) {
+  detailToken += 1;
+  $('#detail-title').textContent = title;
+  $('#detail-head').replaceChildren();
+  $('#detail-body').replaceChildren(el('p', 'status', 'Lade …'));
+  if (!layers.includes('detail')) pushLayer('detail');
+  show($('#detail'), true);
+  $('#detail').scrollTop = 0;
+  return detailToken;
+}
+
+function renderHead({ cover, chips, lines, plot }) {
+  const head = $('#detail-head');
+  head.replaceChildren();
+  if (cover) {
+    const img = el('img');
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    img.src = iconSrc(cover);
+    img.addEventListener('error', () => img.remove());
+    head.append(img);
+  }
+  const meta = el('div', 'detail-meta');
+  const chipRow = el('div', 'chips');
+  for (const c of chips.filter(Boolean)) chipRow.append(el('span', `chip${c.cls ? ` ${c.cls}` : ''}`, c.text));
+  if (chipRow.childNodes.length) meta.append(chipRow);
+  for (const l of lines.filter(Boolean)) meta.append(el('div', 'line', l));
+  if (plot) meta.append(el('p', 'plot', plot));
+  head.append(meta);
+}
+
+function techInfo(info) {
+  const lines = [];
+  const chips = [];
+  const v = toArray(info?.video)[0];
+  if (v?.codec_name) lines.push(`Video: ${String(v.codec_name).toUpperCase()}${v.width ? ` ${v.width}×${v.height}` : ''}`);
+  const audios = toArray(info?.audio);
+  if (audios.length) {
+    lines.push(`Ton: ${audios.map((a) => [langLabel(a.tags?.language || a.language), a.codec_name && String(a.codec_name).toUpperCase()]
+      .filter(Boolean).join(' ')).filter(Boolean).join(' · ')}`.replace(/Ton: $/, ''));
+    if (audios.every((a) => BAD_AUDIO.has(String(a.codec_name).toLowerCase()))) {
+      chips.push({ text: 'Tonformat evtl. nicht abspielbar', cls: 'bad' });
+    }
+  }
+  return { lines: lines.filter((l) => l && !/:\s*$/.test(l)), chips };
+}
+
+async function openMovie(it) {
+  const token = openDetail(it.name);
+  const { username: u, password: p } = cfg;
+  const body = $('#detail-body');
+  const play = el('button', 'primary play', '▶ Abspielen');
+  play.addEventListener('click', () => playStream(
+    `${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null,
+    `${cfg.server}/movie/${u}/${p}/${it.id}.m3u8`));
+  const fmtChip = { text: it.ext.toUpperCase(), cls: isPlayable(it) ? 'ok' : 'bad' };
+  const langChip = it.lang && { text: LANGS[it.lang].label };
+
+  renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
+  body.replaceChildren(play);
 
   try {
-    const info = await api('get_series_info', { series_id: it.id });
-    const seasons = info.episodes && !Array.isArray(info.episodes) ? info.episodes : { 1: info.episodes || [] };
+    const r = await cachedApi(`vod:${it.id}`, 'get_vod_info', { vod_id: it.id });
+    if (token !== detailToken) return;
+    const info = r?.info || {};
+    const tech = techInfo(info);
+    const year = pick(info.year, String(info.releasedate || info.releaseDate || '').slice(0, 4));
+    const rating = pick(info.rating, info.rating_5based && Number(info.rating_5based) * 2);
+    renderHead({
+      cover: pick(info.movie_image, info.cover_big, it.icon),
+      chips: [fmtChip, langChip, year && { text: year }, pick(info.duration) && { text: info.duration }, rating && { text: `★ ${Number(rating).toFixed(1)}` },
+        pick(info.age, info.mpaa_rating) && { text: info.age || info.mpaa_rating }, ...tech.chips],
+      lines: [pick(info.genre) && `Genre: ${info.genre}`, pick(info.country) && `Land: ${info.country}`,
+        pick(info.director) && `Regie: ${info.director}`, pick(info.cast, info.actors) && `Besetzung: ${pick(info.cast, info.actors)}`, ...tech.lines],
+      plot: pick(info.plot, info.description) || '',
+    });
+  } catch { /* Details sind optional, Abspielen geht trotzdem */ }
+}
+
+async function openSeries(it) {
+  const token = openDetail(it.name);
+  const body = $('#detail-body');
+  renderHead({ cover: it.icon, chips: [it.lang && { text: LANGS[it.lang].label }], lines: [], plot: '' });
+
+  try {
+    const r = await cachedApi(`series:${it.id}`, 'get_series_info', { series_id: it.id });
+    if (token !== detailToken) return;
+    const info = r?.info || {};
+    const rating = pick(info.rating, info.rating_5based && Number(info.rating_5based) * 2);
+    renderHead({
+      cover: pick(info.cover, it.icon),
+      chips: [it.lang && { text: LANGS[it.lang].label }, pick(info.releaseDate, info.releasedate) && { text: String(pick(info.releaseDate, info.releasedate)).slice(0, 4) },
+        pick(info.episode_run_time) && { text: `${info.episode_run_time} Min.` }, rating && { text: `★ ${Number(rating).toFixed(1)}` }],
+      lines: [pick(info.genre) && `Genre: ${info.genre}`, pick(info.director) && `Regie: ${info.director}`, pick(info.cast) && `Besetzung: ${info.cast}`],
+      plot: pick(info.plot) || '',
+    });
+
+    const seasons = r.episodes && !Array.isArray(r.episodes) ? r.episodes : { 1: r.episodes || [] };
     body.replaceChildren();
     const keys = Object.keys(seasons).sort((a, b) => Number(a) - Number(b));
     if (!keys.length) throw new Error('Keine Episoden gefunden.');
     for (const s of keys) {
-      const h = document.createElement('h3');
-      h.textContent = `Staffel ${s}`;
-      body.append(h);
+      body.append(el('h3', null, `Staffel ${s}`));
       for (const ep of seasons[s]) {
-        const row = document.createElement('div');
-        row.className = 'item';
+        const row = el('div', 'item');
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
-        const label = document.createElement('span');
-        label.className = 'name';
-        label.textContent = `${ep.episode_num ?? ''}. ${ep.title || 'Episode'}`;
+        const label = el('span', 'name', `${ep.episode_num ?? ''}. ${ep.title || 'Episode'}`);
         const epExt = ep.container_extension || 'mp4';
-        const epFmt = document.createElement('span');
-        epFmt.className = `fmt ${PLAYABLE_EXT.has(epExt.toLowerCase()) ? 'ok' : 'bad'}`;
-        epFmt.textContent = epExt.toUpperCase();
-        row.append(label, epFmt);
+        row.append(label, el('span', `fmt ${PLAYABLE_EXT.has(epExt.toLowerCase()) ? 'ok' : 'bad'}`, epExt.toUpperCase()));
         const go = () => playStream(
-          `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${ep.container_extension || 'mp4'}`,
+          `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`,
           it.name, `S${s} · ${label.textContent}`, null,
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.m3u8`);
         row.addEventListener('click', go);
@@ -344,11 +590,11 @@ async function openSeries(it) {
       }
     }
   } catch (ex) {
-    body.replaceChildren(Object.assign(document.createElement('p'), { className: 'status', textContent: ex.message }));
+    if (token === detailToken) body.replaceChildren(el('p', 'status', ex.message));
   }
 }
 
-$('#series-back').addEventListener('click', () => history.back());
+$('#detail-back').addEventListener('click', () => history.back());
 
 /* ---------- Player ---------- */
 
@@ -488,13 +734,17 @@ $('#opt-proxy').addEventListener('change', (e) => {
   cfg.alwaysProxy = e.target.checked;
   store.set('cfg', cfg);
 });
-$('#refresh-btn').addEventListener('click', () => {
+$('#refresh-btn').addEventListener('click', async () => {
+  saveView();
   for (const k of Object.keys(data)) delete data[k];
+  detailCache.clear();
+  await idb.clear();
   $('#settings').close();
   renderTab();
 });
-$('#logout-btn').addEventListener('click', () => {
+$('#logout-btn').addEventListener('click', async () => {
   store.del('cfg');
+  await idb.clear();
   location.reload();
 });
 

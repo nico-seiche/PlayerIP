@@ -78,8 +78,8 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .sheet { position: fixed; inset: 0; z-index: 10; background: var(--bg); overflow-y: auto; padding-bottom: var(--safe-b); }
 .sheet .topbar { padding-top: calc(var(--safe-t) + 8px); }
 .sheet h2 { margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#series-body { padding: 0 12px 24px; display: grid; gap: 8px; }
-#series-body h3 { margin: 12px 0 0; color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: .04em; }
+#detail-body { padding: 0 12px 24px; display: grid; gap: 8px; }
+#detail-body h3 { margin: 12px 0 0; color: var(--muted); font-size: 14px; text-transform: uppercase; letter-spacing: .04em; }
 
 /* Player */
 .player { position: fixed; inset: 0; z-index: 20; background: #000; display: grid; }
@@ -103,3 +103,19 @@ dialog::backdrop { background: #000a; }
 .fmt.ok { background: #1d3b2a; color: #6fe3a0; }
 .fmt.bad { background: #43241f; color: #ff9d8f; }
 .grid .item .fmt { position: absolute; top: 8px; left: 8px; }
+
+.filters.extra { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.fmt.lang { background: var(--surface-2); color: var(--muted); }
+.grid .item .fmt.lang { top: 36px; }
+
+.detail-head { display: flex; gap: 14px; padding: 4px 12px 12px; align-items: flex-start; }
+.detail-head > img { width: 110px; flex: none; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 10px; background: var(--surface-2); }
+.detail-meta { display: grid; gap: 6px; min-width: 0; flex: 1; font-size: 14px; color: var(--muted); }
+.detail-meta .line { overflow-wrap: anywhere; }
+.detail-meta .plot { margin: 4px 0 0; color: var(--text); line-height: 1.45; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text); }
+.chip.ok { background: #1d3b2a; color: #6fe3a0; }
+.chip.bad { background: #43241f; color: #ff9d8f; }
+button.play { width: 100%; padding: 14px; font-size: 17px; }
+@media (max-width: 480px) { .detail-head { flex-direction: column; } .detail-head > img { width: 140px; } }
