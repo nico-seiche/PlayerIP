@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PlayerIP</title>
+  <meta name="theme-color" content="#0e0f13">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PlayerIP">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app">
+    <!-- Login -->
+    <section id="login" class="screen" hidden>
+      <form id="login-form" class="card" autocomplete="on">
+        <h1>PlayerIP</h1>
+        <label>Server-URL
+          <input name="server" type="url" inputmode="url" placeholder="http://beispiel.tv:8080" required autocapitalize="off" autocorrect="off">
+        </label>
+        <label>Benutzername
+          <input name="username" type="text" autocomplete="username" required autocapitalize="off" autocorrect="off">
+        </label>
+        <label>Passwort
+          <input name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <label>Proxy-Zugriffsschlüssel
+          <input name="key" type="password" autocomplete="off" required>
+          <small>Der <code>ACCESS_KEY</code> aus deinen Vercel-Umgebungsvariablen.</small>
+        </label>
+        <p id="login-error" class="error" role="alert" hidden></p>
+        <button type="submit" class="primary">Anmelden</button>
+      </form>
+    </section>
+
+    <!-- Hauptansicht -->
+    <section id="browse" class="screen" hidden>
+      <header class="topbar">
+        <nav id="tabs" role="tablist">
+          <button role="tab" data-tab="live" aria-selected="true">Live</button>
+          <button role="tab" data-tab="vod" aria-selected="false">Filme</button>
+          <button role="tab" data-tab="series" aria-selected="false">Serien</button>
+          <button role="tab" data-tab="fav" aria-selected="false">★</button>
+        </nav>
+        <button id="menu-btn" class="icon" aria-label="Einstellungen">⚙︎</button>
+      </header>
+      <div class="filters">
+        <select id="category" aria-label="Kategorie"></select>
+        <input id="search" type="search" placeholder="Suchen …" aria-label="Suchen" autocomplete="off">
+      </div>
+      <p id="status" class="status" hidden></p>
+      <ul id="list" class="list"></ul>
+      <div id="sentinel"></div>
+    </section>
+
+    <!-- Serien-Detail -->
+    <section id="series-detail" class="sheet" hidden>
+      <header class="topbar">
+        <button id="series-back" class="icon" aria-label="Zurück">‹</button>
+        <h2 id="series-title"></h2>
+      </header>
+      <div id="series-body"></div>
+    </section>
+
+    <!-- Player -->
+    <section id="player" class="player" hidden>
+      <video id="video" playsinline webkit-playsinline controls x-webkit-airplay="allow" autoplay></video>
+      <div class="player-bar">
+        <button id="player-close" class="icon" aria-label="Schließen">✕</button>
+        <div class="player-info">
+          <strong id="player-title"></strong>
+          <span id="player-sub"></span>
+        </div>
+        <button id="airplay" class="icon" aria-label="AirPlay" hidden>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M6 22h12l-6-6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+        </button>
+      </div>
+      <p id="player-error" class="error" role="alert" hidden></p>
+    </section>
+
+    <!-- Einstellungen -->
+    <dialog id="settings">
+      <form method="dialog" class="card">
+        <h2>Einstellungen</h2>
+        <label class="row">
+          <input type="checkbox" id="opt-proxy">
+          Streams immer über den Proxy laden
+        </label>
+        <small>Nur nötig, wenn Wiedergabe direkt nicht klappt (z. B. http-Server auf https-Seite wird automatisch über den Proxy geladen). Belastet dein Vercel-Kontingent.</small>
+        <button id="refresh-btn" type="button">Listen neu laden</button>
+        <button id="logout-btn" type="button" class="danger">Abmelden</button>
+        <button value="close" class="primary">Fertig</button>
+      </form>
+    </dialog>
+  </main>
+
+  <script src="/vendor/hls.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
