@@ -53,6 +53,18 @@
         <select id="category" aria-label="Kategorie"></select>
         <input id="search" type="search" placeholder="Suchen …" aria-label="Suchen" autocomplete="off">
       </div>
+      <div id="vod-filters" class="filters" hidden>
+        <select id="sort" aria-label="Sortierung">
+          <option value="">Sortierung: Standard</option>
+          <option value="name">Name A–Z</option>
+          <option value="new">Neueste zuerst</option>
+          <option value="playable">Abspielbare zuerst</option>
+        </select>
+        <select id="playable" aria-label="Abspielbarkeit">
+          <option value="">Alle Formate</option>
+          <option value="1">Nur abspielbare (MP4 &amp; Co.)</option>
+        </select>
+      </div>
       <p id="status" class="status" hidden></p>
       <ul id="list" class="list"></ul>
       <div id="sentinel"></div>

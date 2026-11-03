@@ -4,6 +4,9 @@
 
 const $ = (sel) => document.querySelector(sel);
 const PAGE_SIZE = 100;
+// Formate, die Safari (iPhone/iPad/Mac) direkt abspielt. MKV, AVI usw. nicht.
+const PLAYABLE_EXT = new Set(['mp4', 'm4v', 'mov', 'm3u8']);
+const isPlayable = (it) => PLAYABLE_EXT.has(String(it.ext).toLowerCase());
 const TYPES = {
   live: { cats: 'get_live_categories', items: 'get_live_streams', grid: false },
   vod: { cats: 'get_vod_categories', items: 'get_vod_streams', grid: true },
@@ -114,6 +117,7 @@ async function loadType(type) {
       icon: x.stream_icon || x.cover || '',
       cat: String(x.category_id ?? ''),
       ext: x.container_extension || 'mp4',
+      added: Number(x.added) || 0,
     })),
   };
   return data[type];
@@ -158,10 +162,18 @@ function applyFilter() {
   } else {
     pool = data[tab].items;
   }
-  filtered = pool.filter((it) => (!cat || it.cat === cat) && (!q || it.name.toLowerCase().includes(q)));
+  const onlyPlayable = tab === 'vod' && $('#playable').value === '1';
+  filtered = pool.filter((it) => (!cat || it.cat === cat) && (!q || it.name.toLowerCase().includes(q)) && (!onlyPlayable || isPlayable(it)));
+  if (tab === 'vod') {
+    const sort = $('#sort').value;
+    if (sort === 'name') filtered.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    else if (sort === 'new') filtered.sort((a, b) => b.added - a.added);
+    else if (sort === 'playable') filtered.sort((a, b) => Number(isPlayable(b)) - Number(isPlayable(a)));
+  }
   shown = 0;
   const list = $('#list');
   list.replaceChildren();
+  show($('#vod-filters'), tab === 'vod');
   list.classList.toggle('grid', tab !== 'live' && tab !== 'fav' && TYPES[tab].grid);
   setStatus(filtered.length ? '' : 'Nichts gefunden.');
   renderMore();
@@ -200,7 +212,15 @@ function renderMore() {
     fav.textContent = '★';
     fav.setAttribute('aria-label', 'Favorit');
 
-    li.append(img, name, fav);
+    if (it.type === 'vod') {
+      const fmt = document.createElement('span');
+      fmt.className = `fmt ${isPlayable(it) ? 'ok' : 'bad'}`;
+      fmt.textContent = String(it.ext).toUpperCase();
+      fmt.title = isPlayable(it) ? 'Wird abgespielt' : 'Safari kann dieses Format evtl. nicht abspielen';
+      li.append(img, name, fmt, fav);
+    } else {
+      li.append(img, name, fav);
+    }
     frag.append(li);
   }
   shown += PAGE_SIZE;
@@ -249,6 +269,8 @@ $('#tabs').addEventListener('click', (e) => {
 });
 
 $('#category').addEventListener('change', applyFilter);
+$('#sort').addEventListener('change', applyFilter);
+$('#playable').addEventListener('change', applyFilter);
 let searchTimer;
 $('#search').addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -307,7 +329,11 @@ async function openSeries(it) {
         const label = document.createElement('span');
         label.className = 'name';
         label.textContent = `${ep.episode_num ?? ''}. ${ep.title || 'Episode'}`;
-        row.append(label);
+        const epExt = ep.container_extension || 'mp4';
+        const epFmt = document.createElement('span');
+        epFmt.className = `fmt ${PLAYABLE_EXT.has(epExt.toLowerCase()) ? 'ok' : 'bad'}`;
+        epFmt.textContent = epExt.toUpperCase();
+        row.append(label, epFmt);
         const go = () => playStream(
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${ep.container_extension || 'mp4'}`,
           it.name, `S${s} · ${label.textContent}`, null,
