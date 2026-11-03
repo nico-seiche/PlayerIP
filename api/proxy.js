@@ -101,7 +101,8 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const headers = { 'user-agent': 'Mozilla/5.0', accept: '*/*' };
+  // Manche Anbieter lassen nur bekannte IPTV-Clients zu; per Env UPSTREAM_USER_AGENT überschreibbar.
+  const headers = { 'user-agent': process.env.UPSTREAM_USER_AGENT || 'IPTVSmartersPro', accept: '*/*' };
   if (req.headers.range) headers.range = req.headers.range;
 
   try {

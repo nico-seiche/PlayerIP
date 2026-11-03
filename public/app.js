@@ -48,7 +48,10 @@ async function api(action, params = {}, creds = cfg) {
   const target = `${creds.server}/player_api.php?${qs}`;
   const res = await fetch(`/api/proxy?u=${encodeURIComponent(target)}&k=${encodeURIComponent(creds.key)}`);
   if (res.status === 401) throw new Error('Proxy-Zugriffsschlüssel ist falsch.');
-  if (!res.ok) throw new Error(`Server antwortet mit Fehler ${res.status}.`);
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 150);
+    throw new Error(`Server antwortet mit Fehler ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
   return res.json();
 }
 
