@@ -94,7 +94,7 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .player-info { flex: 1; min-width: 0; display: grid; }
 .player-info strong, .player-info span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-info span { color: #ccc; font-size: 13px; }
-.player .error { position: absolute; left: 16px; right: 16px; bottom: calc(var(--safe-b) + 90px); background: #000c; padding: 12px; border-radius: 10px; text-align: center; }
+.player .error { white-space: pre-line; word-break: break-word; position: absolute; left: 16px; right: 16px; bottom: calc(var(--safe-b) + 90px); background: #000c; padding: 12px; border-radius: 10px; text-align: center; }
 
 dialog { border: 0; padding: 0; background: transparent; color: var(--text); width: min(420px, calc(100% - 32px)); }
 dialog::backdrop { background: #000a; }

@@ -366,16 +366,26 @@ function buildCandidates(urls) {
   return list;
 }
 
-async function describeFailure(url) {
+async function probe(url) {
   const ext = (new URL(url).pathname.match(/\.(\w+)$/) || [])[1] || '?';
-  const code = video.error?.code;
-  let server = '';
   try {
     const r = await fetch(proxify(url), { headers: { Range: 'bytes=0-0' } });
-    server = ` Server: ${r.status} ${r.headers.get('content-type') || ''}`.trimEnd();
-    r.body?.cancel();
-  } catch { server = ' Server nicht erreichbar.'; }
-  return `Wiedergabe nicht möglich (Format .${ext}, Fehlercode ${code ?? '–'}).${server}`;
+    const type = (r.headers.get('content-type') || '').split(';')[0];
+    let note = '';
+    if (/text|json|mpegurl/.test(type)) {
+      note = (await r.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    } else {
+      r.body?.cancel();
+    }
+    return `.${ext}: ${r.status} ${type}${note ? ` „${note}“` : ''}`;
+  } catch {
+    return `.${ext}: nicht erreichbar`;
+  }
+}
+
+async function describeFailure(urls) {
+  const lines = await Promise.all([...new Set(urls)].map(probe));
+  return `Wiedergabe nicht möglich (Fehlercode ${video.error?.code ?? '–'}).\n${lines.join('\n')}`;
 }
 
 function attach(urls) {
@@ -390,7 +400,7 @@ function tryCandidate(list, index, token) {
   const next = async () => {
     if (token !== playToken) return;
     if (index + 1 < list.length) tryCandidate(list, index + 1, token);
-    else showPlayerError(await describeFailure(list[0].url));
+    else showPlayerError(await describeFailure(list.map((c) => c.url)));
   };
 
   if (cand.kind === 'hlsjs') {
