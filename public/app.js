@@ -912,6 +912,36 @@ function showPlayerError(msg) {
 
 let remux = null;
 
+// Startet die Umwandlung eines MKV im Browser; opts: { audioIndex, startAt } beim Wechsel der Tonspur.
+function launchRemux(cand, token, opts = {}) {
+  stopRemux();
+  const base = $('#player-sub').textContent.split(' · ')[0];
+  const note = (txt) => { if (token === playToken) $('#player-sub').textContent = [base, txt].filter(Boolean).join(' · '); };
+  note('MKV wird im Browser umgewandelt (experimentell) …');
+  remuxCtx = { cand, token };
+  import('/vendor/mkvstream.js')
+    .then(({ playMkv }) => playMkv(video, cand.src, {
+      ...opts,
+      onStatus: note,
+      onError: (e) => { if (token === playToken) showPlayerError(`Umwandlung fehlgeschlagen: ${e.message}`); },
+    }))
+    .then((ctrl) => {
+      if (token !== playToken) { ctrl.destroy(); return; }
+      remux = ctrl;
+      note(ctrl.info.skipped ? `Ton nicht unterstützt (${ctrl.info.skipped}) – ohne Ton` : (ctrl.info.audio ? `Ton: ${ctrl.info.audio}` : 'ohne Ton'));
+      video.onerror = () => showPlayerError('Wiedergabe nicht möglich (Bild- oder Tonformat wird nicht unterstützt).');
+      updateAudioButton();
+      video.play().catch(() => {});
+    })
+    .catch((e) => { if (token === playToken) showPlayerError(`Umwandlung nicht möglich: ${e.message}`); });
+}
+
+let remuxCtx = null;
+function switchRemuxAudio(index) {
+  if (!remuxCtx) return;
+  launchRemux(remuxCtx.cand, remuxCtx.token, { audioIndex: index, startAt: video.currentTime });
+}
+
 function stopRemux() {
   if (remux) { remux.destroy(); remux = null; }
 }
@@ -919,6 +949,9 @@ function stopRemux() {
 function teardownPlayer() {
   playToken++;
   stopRemux();
+  remuxCtx = null;
+  closeMenu();
+  $('#audio-btn').hidden = true;
   video.onerror = null;
   if (hls) { hls.destroy(); hls = null; }
   video.pause();
@@ -994,24 +1027,7 @@ function tryCandidate(list, index, token) {
   };
 
   if (cand.kind === 'remux') {
-    stopRemux();
-    const base = $('#player-sub').textContent.split(' · ')[0];
-    const note = (txt) => { if (token === playToken) $('#player-sub').textContent = [base, txt].filter(Boolean).join(' · '); };
-    note('MKV wird im Browser umgewandelt (experimentell) …');
-    import('/vendor/mkvstream.js')
-      .then(({ playMkv }) => playMkv(video, cand.src, {
-        onStatus: note,
-        onError: (e) => { if (token === playToken) showPlayerError(`Umwandlung fehlgeschlagen: ${e.message}`); },
-      }))
-      .then((ctrl) => {
-        if (token !== playToken) { ctrl.destroy(); return; }
-        remux = ctrl;
-        const a = ctrl.info.audio ? `Ton: ${ctrl.info.audio}` : 'ohne Ton';
-        note(ctrl.info.skipped ? `Ton nicht unterstützt (${ctrl.info.skipped}) – ohne Ton` : a);
-        video.onerror = () => showPlayerError('Wiedergabe nicht möglich (Bild- oder Tonformat wird nicht unterstützt).');
-        video.play().catch(() => {});
-      })
-      .catch((e) => { if (token === playToken) showPlayerError(`Umwandlung nicht möglich: ${e.message}`); });
+    launchRemux(cand, token);
     return;
   }
 
@@ -1048,34 +1064,161 @@ async function playStream(url, title, sub, liveId, alt) {
 
 $('#player-close').addEventListener('click', () => history.back());
 
-/* Unsere Leiste (Titel, Schließen, AirPlay) soll mit Safaris eigenen Bedienelementen verschwinden.
-   Safari verrät deren Zustand nicht, daher spiegeln wir das Verhalten: Ein Tipp aufs Bild blendet
-   bei sichtbarer Leiste aus, bei versteckter ein. Außerdem blendet sie sich nach einigen Sekunden aus. */
+/* ---------- Eigene Bedienelemente ---------- */
+/* Safaris Standardleiste lässt sich nicht verschieben oder teilweise ausblenden (AirPlay, Tempo-Menü, Ränder).
+   Darum zeichnen wir die Bedienung selbst. Alles blendet gemeinsam aus und ein, auch der Titel. */
+
 const UI_HIDE_MS = 3500;
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const playerEl = $('#player');
+const scrub = $('#scrub');
+let scrubbing = false;
+let scrubFrac = 0;
+let menuKind = null;
+let rate = 1;
+
+const isLive = () => video.duration === Infinity;
 
 function showUi() {
   playerEl.classList.remove('idle');
   clearTimeout(idleTimer);
-  if (!video.paused) idleTimer = setTimeout(hideUi, UI_HIDE_MS);
+  if (!video.paused && !scrubbing && !menuKind) idleTimer = setTimeout(hideUi, UI_HIDE_MS);
 }
 
 function hideUi() {
   clearTimeout(idleTimer);
-  if (!video.paused) playerEl.classList.add('idle');
+  if (video.paused || scrubbing) return;
+  closeMenu();
+  playerEl.classList.add('idle');
 }
 
-playerEl.addEventListener('pointerdown', (e) => {
-  if (e.target.closest('.player-bar button')) { showUi(); return; }
-  if (playerEl.classList.contains('idle') || video.paused) showUi(); else hideUi();
-});
-// Maus (Desktop): Bewegung blendet ein. Bei Touch nicht, sonst kommt die Leiste nach dem Ausblenden-Tipp zurück.
-playerEl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') showUi(); });
-playerEl.addEventListener('keydown', showUi);
+function fmtTime(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+function setScrub(frac) {
+  const f = Math.min(1, Math.max(0, frac || 0));
+  scrub.value = String(Math.round(f * 1000));
+  scrub.style.setProperty('--p', `${f * 100}%`);
+}
+
+function updateTimes() {
+  const live = isLive();
+  show($('#live-badge'), live);
+  for (const id of ['#t-cur', '#t-rem', '#scrub', '#skip-back', '#skip-fwd', '#speed-btn']) $(id).hidden = live;
+  if (live) return;
+  const d = Number.isFinite(video.duration) ? video.duration : 0;
+  const c = scrubbing ? scrubFrac * d : video.currentTime;
+  $('#t-cur').textContent = fmtTime(c);
+  $('#t-rem').textContent = `-${fmtTime(d - c)}`;
+  if (!scrubbing) setScrub(d ? c / d : 0);
+}
+
+function updatePlayState() {
+  playerEl.classList.toggle('playing', !video.paused);
+}
+
+for (const ev of ['timeupdate', 'durationchange', 'loadedmetadata', 'seeked', 'emptied']) video.addEventListener(ev, updateTimes);
+for (const ev of ['play', 'pause', 'playing', 'emptied']) video.addEventListener(ev, updatePlayState);
 video.addEventListener('play', showUi);
 video.addEventListener('pause', showUi);
+video.addEventListener('loadedmetadata', () => { video.playbackRate = rate; updateAudioButton(); });
 
-// AirPlay (nur Safari/WebKit): Button erscheint, sobald ein Ziel (Apple TV) erreichbar ist.
+$('#play-btn').addEventListener('click', () => { if (video.paused) video.play().catch(() => {}); else video.pause(); });
+const skip = (delta) => {
+  const d = Number.isFinite(video.duration) ? video.duration : Infinity;
+  video.currentTime = Math.min(Math.max(0, video.currentTime + delta), d);
+};
+$('#skip-back').addEventListener('click', () => skip(-10));
+$('#skip-fwd').addEventListener('click', () => skip(10));
+
+scrub.addEventListener('pointerdown', () => { scrubbing = true; showUi(); });
+scrub.addEventListener('input', () => { scrubbing = true; scrubFrac = Number(scrub.value) / 1000; scrub.style.setProperty('--p', `${scrubFrac * 100}%`); updateTimes(); });
+scrub.addEventListener('change', () => {
+  if (Number.isFinite(video.duration)) video.currentTime = (Number(scrub.value) / 1000) * video.duration;
+  scrubbing = false;
+  showUi();
+});
+
+/* Tippen: auf Bedienelemente = sichtbar halten, aufs Bild = ein- bzw. ausblenden */
+playerEl.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.player-bar, .side-stack, .center-ctl, .bottom-bar, .menu')) { showUi(); return; }
+  if (menuKind) { closeMenu(); return; }
+  if (e.pointerType === 'mouse') { showUi(); $('#play-btn').click(); return; } // Desktop: Klick aufs Bild = Start/Pause
+  if (playerEl.classList.contains('idle') || video.paused) showUi(); else hideUi();
+});
+playerEl.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') showUi(); });
+playerEl.addEventListener('keydown', (e) => {
+  showUi();
+  if (e.key === ' ' && !e.target.closest('button')) { e.preventDefault(); $('#play-btn').click(); }
+  else if (e.key === 'ArrowLeft' && !isLive()) skip(-10);
+  else if (e.key === 'ArrowRight' && !isLive()) skip(10);
+});
+
+/* ----- Menüs (Tempo, Tonspur) ----- */
+function closeMenu() {
+  menuKind = null;
+  show($('#player-menu'), false);
+}
+
+function openMenu(kind, items) {
+  if (menuKind === kind) { closeMenu(); return; }
+  menuKind = kind;
+  const menu = $('#player-menu');
+  menu.replaceChildren(...items.map((i) => {
+    const b = el('button', null, i.label);
+    b.type = 'button';
+    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(Boolean(i.checked)));
+    b.addEventListener('click', () => { i.pick(); closeMenu(); showUi(); });
+    return b;
+  }));
+  show(menu, true);
+  showUi();
+}
+
+const speedText = (r) => `${String(r).replace('.', ',')}×`;
+function updateSpeedLabel() { $('#speed-label').textContent = speedText(rate); }
+$('#speed-btn').addEventListener('click', () => openMenu('speed', SPEEDS.map((r) => ({
+  label: speedText(r),
+  checked: r === rate,
+  pick: () => { rate = r; video.playbackRate = r; video.defaultPlaybackRate = r; updateSpeedLabel(); },
+}))));
+
+/* Tonspuren: Safari meldet sie bei normalen Dateien/HLS selbst; bei umgewandelten MKV kennt sie unser Modul */
+function audioOptions() {
+  if (remux?.info?.audioTracks?.length > 1) {
+    return remux.info.audioTracks.map((t) => ({
+      label: [langLabel(t.lang) || t.lang || `Spur ${t.index + 1}`, String(t.codec).toUpperCase()].filter(Boolean).join(' · '),
+      checked: t.index === remux.info.audioIndex,
+      pick: () => switchRemuxAudio(t.index),
+    }));
+  }
+  const list = video.audioTracks;
+  if (list && list.length > 1) {
+    return [...list].map((t, i) => ({
+      label: t.label || langLabel(t.language) || t.language || `Spur ${i + 1}`,
+      checked: t.enabled,
+      pick: () => { [...list].forEach((x, j) => { x.enabled = j === i; }); },
+    }));
+  }
+  return [];
+}
+
+function updateAudioButton() {
+  $('#audio-btn').hidden = audioOptions().length === 0;
+}
+$('#audio-btn').addEventListener('click', () => openMenu('audio', audioOptions()));
+if (video.audioTracks) {
+  video.audioTracks.addEventListener?.('addtrack', updateAudioButton);
+  video.audioTracks.addEventListener?.('removetrack', updateAudioButton);
+}
+
+// AirPlay (nur Safari/WebKit, nicht bei umgewandelten MKV): Knopf erscheint, sobald ein Apple TV erreichbar ist.
 if (window.WebKitPlaybackTargetAvailabilityEvent) {
   video.addEventListener('webkitplaybacktargetavailabilitychanged', (e) => {
     show($('#airplay'), e.availability === 'available');

@@ -114,7 +114,8 @@
 
     <!-- Player -->
     <section id="player" class="player" hidden>
-      <video id="video" playsinline webkit-playsinline controls x-webkit-airplay="allow" autoplay></video>
+      <video id="video" playsinline webkit-playsinline x-webkit-airplay="allow" autoplay></video>
+
       <div class="player-bar">
         <button id="player-close" class="icon" aria-label="Schließen">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 5l14 14M19 5L5 19"/></svg>
@@ -123,10 +124,42 @@
           <strong id="player-title"></strong>
           <span id="player-sub"></span>
         </div>
+      </div>
+
+      <!-- rechts, mittig: AirPlay, Tempo, Tonspur -->
+      <div class="side-stack">
         <button id="airplay" class="icon" aria-label="AirPlay" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 22h12l-6-6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
         </button>
+        <button id="speed-btn" class="icon" aria-label="Wiedergabegeschwindigkeit"><span id="speed-label">1×</span></button>
+        <button id="audio-btn" class="icon" aria-label="Tonspur" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4 4.5h16a1 1 0 0 1 1 1V15a1 1 0 0 1-1 1H10l-5 4v-4H4a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7.5 9h9M7.5 12h5.5"/></svg>
+        </button>
       </div>
+
+      <!-- Mitte: 10 s zurück, Wiedergabe, 10 s vor -->
+      <div class="center-ctl">
+        <button id="skip-back" class="ctl" aria-label="10 Sekunden zurück">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 7a17 17 0 1 1-16.2 12"/><path d="M29 2.5L24 7l5 4.5"/></g><text x="24" y="30" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">10</text></svg>
+        </button>
+        <button id="play-btn" class="ctl main" aria-label="Wiedergabe oder Pause">
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.2v13.6a.6.6 0 0 0 .9.5l11-6.8a.6.6 0 0 0 0-1L8.900 4.700a.6.6 0 0 0-.9.5z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.500h3.500v15H7zM13.500 4.500H17v15h-3.500z"/></svg>
+        </button>
+        <button id="skip-fwd" class="ctl" aria-label="10 Sekunden vor">
+          <svg viewBox="0 0 48 48" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(48 0) scale(-1 1)"><path d="M24 7a17 17 0 1 1-16.2 12"/><path d="M29 2.5L24 7l5 4.5"/></g><text x="24" y="30" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">10</text></svg>
+        </button>
+      </div>
+
+      <!-- unten: Zeit, Spulleiste, Restzeit (mit Abstand zum abgerundeten Rand) -->
+      <div class="bottom-bar">
+        <span id="t-cur" class="time">0:00</span>
+        <input id="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Position im Film">
+        <span id="t-rem" class="time">-0:00</span>
+        <span id="live-badge" class="live" hidden>● LIVE</span>
+      </div>
+
+      <div id="player-menu" class="menu" hidden></div>
       <p id="player-error" class="error" role="alert" hidden></p>
     </section>
 

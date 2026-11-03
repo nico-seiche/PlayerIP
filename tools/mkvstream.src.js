@@ -10,7 +10,7 @@ const PASS_AUDIO = new Set(['aac', 'ac3', 'eac3', 'opus', 'mp3']);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mime = (kind, codecs) => `${kind}/mp4; codecs="${codecs}"`;
 
-export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], onStatus = () => {}, onError = () => {}, debug = () => {} } = {}) {
+export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], audioIndex = null, startAt: initialStart = 0, onStatus = () => {}, onError = () => {}, debug = () => {} } = {}) {
   const MS = window.ManagedMediaSource || window.MediaSource;
   if (!MS) throw new Error('Dieser Browser unterstützt keine Media Source Extensions.');
 
@@ -26,21 +26,26 @@ export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], 
     throw new Error(`Videoformat (${vTrack.codec || 'unbekannt'}) wird von diesem Gerät nicht unterstützt.`);
   }
 
-  // ---- Ton: bevorzugte Sprache, nur Spuren, die der Browser abspielen kann
+  // ---- Ton: gewünschte Spur (audioIndex), sonst bevorzugte Sprache; nur Spuren, die der Browser abspielen kann
   let aTrack = null;
   let aCodec = null;
-  let aTranscode = false;
+  const allAudio = await input.getAudioTracks();
+  const audioTracks = [];
+  for (let i = 0; i < allAudio.length; i++) {
+    const t = allAudio[i];
+    const cs = await t.getCodecParameterString();
+    const ok = PASS_AUDIO.has(t.codec) && cs && MS.isTypeSupported(mime('audio', cs));
+    audioTracks.push({ index: i, lang: t.languageCode || '', codec: t.codec || '', name: t.name || '', ok: Boolean(ok), cs });
+  }
+  const usable = audioTracks.filter((t) => t.ok);
   const rank = (t) => {
-    const i = preferLangs.indexOf(String(t.languageCode || '').toLowerCase());
+    const i = preferLangs.indexOf(String(t.lang).toLowerCase());
     return i === -1 ? preferLangs.length : i;
   };
-  const audios = (await input.getAudioTracks()).sort((a, b) => rank(a) - rank(b));
-  for (const t of audios) {
-    const cs = await t.getCodecParameterString();
-    if (PASS_AUDIO.has(t.codec) && cs && MS.isTypeSupported(mime('audio', cs))) { aTrack = t; aCodec = cs; break; }
-  }
-  const skipped = audios.length && !aTrack ? audios.map((t) => t.codec).join(', ') : '';
-  const readyText = skipped ? `Ton nicht unterstützt (${skipped}) – ohne Ton` : aTrack ? `Ton: ${aTrack.languageCode || '?'} ${aTrack.codec}` : 'ohne Ton';
+  const chosen = usable.find((t) => t.index === audioIndex) || [...usable].sort((a, b) => rank(a) - rank(b) || a.index - b.index)[0];
+  if (chosen) { aTrack = allAudio[chosen.index]; aCodec = chosen.cs; }
+  const skipped = allAudio.length && !aTrack ? allAudio.map((t) => t.codec).join(', ') : '';
+  const readyText = skipped ? `Ton nicht unterstützt (${skipped}) – ohne Ton` : aTrack ? `Ton: ${chosen.lang || '?'} ${chosen.codec}` : 'ohne Ton';
   const codecs = aCodec ? `${vCodec},${aCodec}` : vCodec;
   const fullMime = mime('video', codecs);
   if (!MS.isTypeSupported(fullMime)) throw new Error('Diese Kombination aus Bild- und Tonformat wird nicht unterstützt.');
@@ -94,6 +99,7 @@ export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], 
   const buffered = (t) => { for (let i = 0; i < sb.buffered.length; i++) if (t >= sb.buffered.start(i) - 0.1 && t <= sb.buffered.end(i)) return true; return false; };
 
   let current = Promise.resolve();
+  let applyStart = initialStart > 0 ? initialStart : null;
 
   async function run(startAt) {
     const my = ++runId;
@@ -164,6 +170,7 @@ export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], 
         await append(queue.shift());
         if (!alive()) break;
         if (!announced) { announced = true; onStatus(readyText); }
+        if (applyStart != null && sb.buffered.length) { video.currentTime = applyStart; applyStart = null; }
         appendedEnd = sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : appendedEnd;
         await trimBehind();
         continue;
@@ -208,10 +215,10 @@ export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], 
   video.addEventListener('seeking', onSeeking);
 
   onStatus(skipped ? `Ton nicht unterstützt (${skipped}) – Film läuft ohne Ton …` : 'Bereite Film vor …');
-  const first = run(0);
+  const first = run(initialStart);
   current = first;
   const ctrl = {
-    info: { duration, audio: aTrack ? `${aTrack.languageCode || '?'} ${aTrack.codec}` : null, skipped },
+    info: { duration, audio: aTrack ? `${chosen.lang || '?'} ${chosen.codec}` : null, skipped, audioTracks: usable, audioIndex: chosen ? chosen.index : null },
     get error() { return fatal; },
     done: first,
     destroy() {
