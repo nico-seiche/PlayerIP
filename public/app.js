@@ -460,6 +460,35 @@ async function cachedApi(key, action, params) {
   return detailCache.get(key);
 }
 
+// Dateigröße ohne Download: Range-Anfrage über den Proxy, die Gesamtgröße steht im Content-Range-Header.
+async function fileSize(url) {
+  if (detailCache.has(`size:${url}`)) return detailCache.get(`size:${url}`);
+  const res = await fetch(proxify(url), { headers: { Range: 'bytes=0-0' } });
+  let bytes = null;
+  const range = res.headers.get('content-range');
+  if (res.ok && range && /\/(\d+)$/.test(range)) bytes = Number(range.match(/\/(\d+)$/)[1]);
+  else if (res.status === 200) bytes = Number(res.headers.get('content-length')) || null; // Server ignoriert Range
+  res.body?.cancel();
+  if (bytes) detailCache.set(`size:${url}`, bytes);
+  return bytes;
+}
+
+function formatSize(bytes) {
+  const n = (v, d) => v.toLocaleString('de-DE', { maximumFractionDigits: d, minimumFractionDigits: d });
+  if (bytes >= 1e9) return `${n(bytes / 1e9, 1)} GB`;
+  if (bytes >= 1e8) return `${n(bytes / 1e6, 0)} MB`;
+  if (bytes >= 1e6) return `${n(bytes / 1e6, 1)} MB`;
+  return `${n(bytes / 1e3, 0)} KB`;
+}
+
+function addChip(c) {
+  const meta = $('#detail-head .detail-meta');
+  if (!meta) return;
+  let row = meta.querySelector('.chips');
+  if (!row) { row = el('div', 'chips'); meta.prepend(row); }
+  row.append(el('span', `chip${c.cls ? ` ${c.cls}` : ''}`, c.text));
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -534,6 +563,7 @@ async function openMovie(it) {
 
   renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
   body.replaceChildren(play);
+  const sizeP = fileSize(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`).catch(() => null);
 
   try {
     const r = await cachedApi(`vod:${it.id}`, 'get_vod_info', { vod_id: it.id });
@@ -551,6 +581,9 @@ async function openMovie(it) {
       plot: pick(info.plot, info.description) || '',
     });
   } catch { /* Details sind optional, Abspielen geht trotzdem */ }
+
+  const bytes = await sizeP;
+  if (bytes && token === detailToken) addChip({ text: formatSize(bytes) });
 }
 
 async function openSeries(it) {
