@@ -1,0 +1,12 @@
+{
+  "name": "playerip-tools",
+  "private": true,
+  "description": "Build-Werkzeuge fuer public/vendor/mkvstream.js (npm run build)",
+  "scripts": {
+    "build": "esbuild mkvstream.src.js --bundle --minify --format=esm --target=es2022 --outfile=../public/vendor/mkvstream.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.5",
+    "mediabunny": "1.65.1"
+  }
+}

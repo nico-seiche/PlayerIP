@@ -101,6 +101,7 @@ dialog::backdrop { background: #000a; }
 
 .fmt { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 6px; border-radius: 6px; }
 .fmt.ok { background: #1d3b2a; color: #6fe3a0; }
+.fmt.warn { background: #3f3416; color: #ffd56b; }
 .fmt.bad { background: #43241f; color: #ff9d8f; }
 .grid .item .fmt { position: absolute; top: 8px; left: 8px; }
 
@@ -119,3 +120,4 @@ dialog::backdrop { background: #000a; }
 .chip.bad { background: #43241f; color: #ff9d8f; }
 button.play { width: 100%; padding: 14px; font-size: 17px; }
 @media (max-width: 480px) { .detail-head { flex-direction: column; } .detail-head > img { width: 140px; } }
+.chip.warn { background: #3f3416; color: #ffd56b; }

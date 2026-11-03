@@ -7,6 +7,10 @@ const PAGE_SIZE = 100;
 // Formate, die Safari (iPhone/iPad/Mac) direkt abspielt. MKV, AVI usw. nicht.
 const PLAYABLE_EXT = new Set(['mp4', 'm4v', 'mov', 'm3u8']);
 const isPlayable = (it) => PLAYABLE_EXT.has(String(it.ext).toLowerCase());
+// MKV kann Safari nicht direkt, aber die App kann es im Browser umpacken (experimentell, braucht Media Source).
+const canRemux = () => Boolean(window.ManagedMediaSource || window.MediaSource);
+const fmtClass = (ext) => (PLAYABLE_EXT.has(String(ext).toLowerCase()) ? 'ok' : (/^mkv$/i.test(ext) && canRemux() ? 'warn' : 'bad'));
+const fmtTitle = (ext) => ({ ok: 'Wird abgespielt', warn: 'MKV: wird im Browser umgewandelt (experimentell)', bad: 'Safari kann dieses Format evtl. nicht abspielen' }[fmtClass(ext)]);
 const TYPES = {
   live: { cats: 'get_live_categories', items: 'get_live_streams', grid: false },
   vod: { cats: 'get_vod_categories', items: 'get_vod_streams', grid: true },
@@ -363,9 +367,9 @@ function renderMore() {
     }
     if (it.type === 'vod') {
       const fmt = document.createElement('span');
-      fmt.className = `fmt ${isPlayable(it) ? 'ok' : 'bad'}`;
+      fmt.className = `fmt ${fmtClass(it.ext)}`;
       fmt.textContent = String(it.ext).toUpperCase();
-      fmt.title = isPlayable(it) ? 'Wird abgespielt' : 'Safari kann dieses Format evtl. nicht abspielen';
+      fmt.title = fmtTitle(it.ext);
       li.append(fmt);
     }
     li.append(fav);
@@ -525,7 +529,7 @@ async function openMovie(it) {
   play.addEventListener('click', () => playStream(
     `${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null,
     `${cfg.server}/movie/${u}/${p}/${it.id}.m3u8`));
-  const fmtChip = { text: it.ext.toUpperCase(), cls: isPlayable(it) ? 'ok' : 'bad' };
+  const fmtChip = { text: it.ext.toUpperCase(), cls: fmtClass(it.ext) };
   const langChip = it.lang && { text: LANGS[it.lang].label };
 
   renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
@@ -579,7 +583,7 @@ async function openSeries(it) {
         row.setAttribute('role', 'button');
         const label = el('span', 'name', `${ep.episode_num ?? ''}. ${ep.title || 'Episode'}`);
         const epExt = ep.container_extension || 'mp4';
-        row.append(label, el('span', `fmt ${PLAYABLE_EXT.has(epExt.toLowerCase()) ? 'ok' : 'bad'}`, epExt.toUpperCase()));
+        row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()));
         const go = () => playStream(
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`,
           it.name, `S${s} · ${label.textContent}`, null,
@@ -608,8 +612,15 @@ function showPlayerError(msg) {
   show(el, Boolean(msg));
 }
 
+let remux = null;
+
+function stopRemux() {
+  if (remux) { remux.destroy(); remux = null; }
+}
+
 function teardownPlayer() {
   playToken++;
+  stopRemux();
   video.onerror = null;
   if (hls) { hls.destroy(); hls = null; }
   video.pause();
@@ -624,8 +635,11 @@ let playToken = 0;
 // Kandidatenliste: direkt -> Proxy, danach (falls vorhanden) die HLS-Variante desselben Titels.
 function buildCandidates(urls) {
   const nativeHls = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
+  const [main, ...alts] = urls.filter(Boolean);
+  const mkv = /\.mkv(\?|$)/i.test(main);
+  const nativeMkv = Boolean(video.canPlayType('video/x-matroska'));
   const list = [];
-  for (const url of urls.filter(Boolean)) {
+  const add = (url) => {
     const isHls = /\.m3u8(\?|$)/i.test(url);
     if (isHls && !nativeHls && window.Hls?.isSupported()) {
       // hls.js braucht CORS -> immer Proxy. Safari spielt HLS nativ (und kann AirPlay).
@@ -634,7 +648,12 @@ function buildCandidates(urls) {
       if (!needsProxy(url)) list.push({ url, kind: 'native', src: url });
       list.push({ url, kind: 'native', src: proxify(url) });
     }
-  }
+  };
+  // Safari kann kein MKV: direkt zur HLS-Variante (falls der Anbieter eine hat), dann Umwandlung im Browser.
+  if (!mkv || nativeMkv) add(main);
+  for (const a of alts) add(a);
+  if (mkv && canRemux()) list.push({ url: main, kind: 'remux', src: proxify(main) });
+  else if (mkv && !list.length) add(main);
   return list;
 }
 
@@ -667,6 +686,7 @@ function attach(urls) {
 function tryCandidate(list, index, token) {
   const cand = list[index];
   showPlayerError('');
+  stopRemux();
   if (hls) { hls.destroy(); hls = null; }
 
   const next = async () => {
@@ -674,6 +694,28 @@ function tryCandidate(list, index, token) {
     if (index + 1 < list.length) tryCandidate(list, index + 1, token);
     else showPlayerError(await describeFailure(list.map((c) => c.url)));
   };
+
+  if (cand.kind === 'remux') {
+    stopRemux();
+    const base = $('#player-sub').textContent.split(' · ')[0];
+    const note = (txt) => { if (token === playToken) $('#player-sub').textContent = [base, txt].filter(Boolean).join(' · '); };
+    note('MKV wird im Browser umgewandelt (experimentell) …');
+    import('/vendor/mkvstream.js')
+      .then(({ playMkv }) => playMkv(video, cand.src, {
+        onStatus: note,
+        onError: (e) => { if (token === playToken) showPlayerError(`Umwandlung fehlgeschlagen: ${e.message}`); },
+      }))
+      .then((ctrl) => {
+        if (token !== playToken) { ctrl.destroy(); return; }
+        remux = ctrl;
+        const a = ctrl.info.audio ? `Ton: ${ctrl.info.audio}` : 'ohne Ton';
+        note(ctrl.info.skipped ? `Ton nicht unterstützt (${ctrl.info.skipped}) – ohne Ton` : a);
+        video.onerror = () => showPlayerError('Wiedergabe nicht möglich (Bild- oder Tonformat wird nicht unterstützt).');
+        video.play().catch(() => {});
+      })
+      .catch((e) => { if (token === playToken) showPlayerError(`Umwandlung nicht möglich: ${e.message}`); });
+    return;
+  }
 
   if (cand.kind === 'hlsjs') {
     hls = new Hls();

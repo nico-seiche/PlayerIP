@@ -20,5 +20,17 @@ Safari spielt HLS nativ, nur dann ist AirPlay möglich. Auf Desktop-Chrome läuf
 
 - Streams laufen direkt zum Anbieter, solange das geht. Nur bei http-Servern (Mixed Content) oder
   wenn "Streams immer über den Proxy" aktiv ist, laufen sie über Vercel (Kontingent beachten).
-- MKV-Dateien spielt Safari nicht ab.
+- MKV-Dateien spielt Safari nicht direkt ab. Die App versucht dann zuerst eine HLS-Variante des Anbieters und packt
+  sonst das MKV im Browser um (`public/vendor/mkvstream.js`, experimentell, ohne AirPlay). Das läuft nur, wenn das
+  Gerät Bild- und Tonformat ohnehin dekodieren kann (z. B. H.264/HEVC + AAC/AC-3, kein DTS). Die Daten laufen dabei
+  über den Proxy (Vercel-Kontingent!).
 - Der Proxy blockt private/lokale Ziele (SSRF-Schutz).
+
+## MKV-Umwandlung neu bauen
+
+`public/vendor/mkvstream.js` wird aus `tools/mkvstream.src.js` mit esbuild und der Bibliothek
+[mediabunny](https://mediabunny.dev) (MPL-2.0) erzeugt:
+
+```
+cd tools && npm install && npm run build
+```
