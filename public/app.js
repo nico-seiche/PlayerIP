@@ -261,7 +261,7 @@ function openItem(it) {
   if (it.type === 'live') {
     playStream(`${base}/live/${u}/${p}/${it.id}.m3u8`, it.name, '', it.id);
   } else if (it.type === 'vod') {
-    playStream(`${base}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase());
+    playStream(`${base}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null, `${base}/movie/${u}/${p}/${it.id}.m3u8`);
   } else {
     openSeries(it);
   }
@@ -310,7 +310,8 @@ async function openSeries(it) {
         row.append(label);
         const go = () => playStream(
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${ep.container_extension || 'mp4'}`,
-          it.name, `S${s} · ${label.textContent}`);
+          it.name, `S${s} · ${label.textContent}`, null,
+          `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.m3u8`);
         row.addEventListener('click', go);
         row.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
         body.append(row);
@@ -336,6 +337,8 @@ function showPlayerError(msg) {
 }
 
 function teardownPlayer() {
+  playToken++;
+  video.onerror = null;
   if (hls) { hls.destroy(); hls = null; }
   video.pause();
   video.removeAttribute('src');
@@ -344,43 +347,73 @@ function teardownPlayer() {
   showPlayerError('');
 }
 
-function attach(url, { allowRetry }) {
-  const isHls = /\.m3u8(\?|$)/i.test(url);
-  const nativeHls = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
-  showPlayerError('');
+let playToken = 0;
 
+// Kandidatenliste: direkt -> Proxy, danach (falls vorhanden) die HLS-Variante desselben Titels.
+function buildCandidates(urls) {
+  const nativeHls = Boolean(video.canPlayType('application/vnd.apple.mpegurl'));
+  const list = [];
+  for (const url of urls.filter(Boolean)) {
+    const isHls = /\.m3u8(\?|$)/i.test(url);
+    if (isHls && !nativeHls && window.Hls?.isSupported()) {
+      // hls.js braucht CORS -> immer Proxy. Safari spielt HLS nativ (und kann AirPlay).
+      list.push({ url, kind: 'hlsjs', src: proxify(url) });
+    } else {
+      if (!needsProxy(url)) list.push({ url, kind: 'native', src: url });
+      list.push({ url, kind: 'native', src: proxify(url) });
+    }
+  }
+  return list;
+}
+
+async function describeFailure(url) {
+  const ext = (new URL(url).pathname.match(/\.(\w+)$/) || [])[1] || '?';
+  const code = video.error?.code;
+  let server = '';
+  try {
+    const r = await fetch(proxify(url), { headers: { Range: 'bytes=0-0' } });
+    server = ` Server: ${r.status} ${r.headers.get('content-type') || ''}`.trimEnd();
+    r.body?.cancel();
+  } catch { server = ' Server nicht erreichbar.'; }
+  return `Wiedergabe nicht möglich (Format .${ext}, Fehlercode ${code ?? '–'}).${server}`;
+}
+
+function attach(urls) {
+  tryCandidate(buildCandidates(urls), 0, ++playToken);
+}
+
+function tryCandidate(list, index, token) {
+  const cand = list[index];
+  showPlayerError('');
   if (hls) { hls.destroy(); hls = null; }
 
-  // hls.js (Desktop-Chrome etc.) braucht CORS -> immer Proxy. Safari spielt HLS nativ (und kann AirPlay).
-  if (isHls && !nativeHls && window.Hls?.isSupported()) {
+  const next = async () => {
+    if (token !== playToken) return;
+    if (index + 1 < list.length) tryCandidate(list, index + 1, token);
+    else showPlayerError(await describeFailure(list[0].url));
+  };
+
+  if (cand.kind === 'hlsjs') {
     hls = new Hls();
-    hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) showPlayerError('Stream konnte nicht geladen werden.'); });
-    hls.loadSource(proxify(url));
+    hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) next(); });
+    hls.loadSource(cand.src);
     hls.attachMedia(video);
     video.play().catch(() => {});
     return;
   }
 
-  const useProxy = needsProxy(url) || !allowRetry;
-  video.src = useProxy ? proxify(url) : url;
+  video.onerror = next;
+  video.src = cand.src;
   video.play().catch(() => {});
-
-  video.onerror = () => {
-    if (allowRetry && !useProxy) {
-      attach(url, { allowRetry: false }); // einmal über den Proxy versuchen
-    } else {
-      showPlayerError('Wiedergabe nicht möglich. Das Format (z. B. MKV) wird vom Browser evtl. nicht unterstützt.');
-    }
-  };
 }
 
-async function playStream(url, title, sub, liveId) {
+async function playStream(url, title, sub, liveId, alt) {
   $('#player-title').textContent = title;
   $('#player-sub').textContent = sub || '';
   if (!layers.includes('player')) pushLayer('player');
   show($('#player'), true);
   bumpControls();
-  attach(url, { allowRetry: true });
+  attach([url, alt]);
 
   if (liveId) {
     try {
