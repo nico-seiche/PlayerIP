@@ -1121,7 +1121,7 @@ $('#player-close').addEventListener('click', () => history.back());
 /* Safaris Standardleiste lässt sich nicht verschieben oder teilweise ausblenden (AirPlay, Tempo-Menü, Ränder).
    Darum zeichnen wir die Bedienung selbst. Alles blendet gemeinsam aus und ein, auch der Titel. */
 
-const UI_HIDE_MS = 3500;
+const UI_HIDE_MS = 5000;
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const playerEl = $('#player');
 const scrub = $('#scrub');
