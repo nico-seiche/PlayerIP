@@ -889,6 +889,26 @@ function openInVlcDownload(url) {
   callVlc(vlcPromptLink(url), 'VLC hat sich nicht geöffnet. Ist die App installiert? Alternativ den Link kopieren und in VLC unter „Netzwerk“ einfügen.');
 }
 
+/* In "Dateien" laden: Eine installierte Web-App darf auf dem iPhone keine Dateien in "Dateien" ablegen. Safari selbst
+   kann das (Download-Symbol, läuft im Hintergrund weiter, Datei landet in Dateien > Downloads). Der Link zeigt auf
+   eine andere Adresse derselben App als die installierte, damit er sich außerhalb der App in Safari öffnet. Die Datei
+   kommt über den Proxy (Content-Disposition: attachment) und verbraucht Vercel-Datenvolumen. */
+const ALT_HOSTS = ['playerip-seiche.vercel.app', 'playerip-git-claude-playerip-pwa-seiche.vercel.app'];
+
+function filesDownloadHref(url, filename) {
+  let origin = location.origin;
+  if (ALT_HOSTS.includes(location.hostname)) origin = `https://${ALT_HOSTS.find((h) => h !== location.hostname)}`;
+  return `${origin}/api/proxy?u=${encodeURIComponent(url)}&k=${encodeURIComponent(cfg.key)}&dl=1&name=${encodeURIComponent(filename)}`;
+}
+
+function saveToFiles(url, filename) {
+  const href = filesDownloadHref(url, filename);
+  const copyAction = { label: 'Link kopieren', fn: async () => { if (await copyText(href)) toast('Download-Link kopiert. In Safari einfügen und öffnen.'); } };
+  const w = window.open(href, '_blank');
+  if (w) toast('Safari öffnet den Download. Fortschritt am Download-Symbol in Safari, fertig in „Dateien“, Ordner „Downloads“.', copyAction);
+  else toast('Safari konnte nicht geöffnet werden. Kopiere den Link und öffne ihn in Safari.', copyAction);
+}
+
 function openSheet(title, items) {
   $('#sheet-title').textContent = title;
   $('#sheet-items').replaceChildren(...items.map((i) => {
@@ -906,6 +926,7 @@ $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') show
 function vlcMenu(title, url, filename) {
   openSheet(title, [
     { label: '▶ In VLC abspielen', hint: 'Streamt direkt vom Anbieter', fn: () => openInVlc(url) },
+    { label: '⬇ In „Dateien“ laden', hint: 'Safari speichert den Film im Ordner „Downloads“ der App Dateien (läuft über Vercel)', fn: () => saveToFiles(url, filename) },
     { label: '⬇ In VLC herunterladen', hint: 'VLC fragt nach, dann „Herunterladen“ wählen. Danach offline und per AirPlay nutzbar', fn: () => openInVlcDownload(url) },
     { label: 'Link kopieren', hint: 'Für „Netzwerk“ in VLC. Der Link enthält dein Passwort', fn: async () => { if (await copyText(url)) toast('Link kopiert.'); } },
   ]);
@@ -936,6 +957,9 @@ function vlcControl(url, filename) {
   const down = el('button', 'vlc-btn', '⬇ In VLC laden');
   down.type = 'button';
   down.addEventListener('click', () => openInVlcDownload(url));
+  const files = el('button', 'vlc-btn vlc-wide', '⬇ In „Dateien“ laden (Safari)');
+  files.type = 'button';
+  files.addEventListener('click', () => saveToFiles(url, filename));
   const copy = el('button', 'vlc-btn vlc-wide', 'Link kopieren');
   copy.type = 'button';
   copy.addEventListener('click', async () => {
@@ -943,7 +967,7 @@ function vlcControl(url, filename) {
     copy.textContent = ok ? '✓ Kopiert' : 'Link kopieren';
     if (ok) setTimeout(() => { copy.textContent = 'Link kopieren'; }, 2000);
   });
-  root.append(open, down, copy, el('p', 'vlc-note', '„In VLC laden“: VLC fragt nach, dann „Herunterladen“ wählen. VLC speichert den Film selbst (lokal, offline, auch MKV, per AirPlay übertragbar). Der Name in VLC ist die Filmnummer. Der Link enthält dein Passwort.'));
+  root.append(open, down, files, copy, el('p', 'vlc-note', '„In „Dateien“ laden“ öffnet Safari und speichert den Film im Ordner „Downloads“ der App Dateien (über Vercel, verbraucht Datenvolumen). „In VLC laden“: VLC fragt nach, dann „Herunterladen“ wählen. VLC speichert den Film selbst (lokal, offline, auch MKV, per AirPlay übertragbar). Der Name in VLC ist die Filmnummer. Der Link enthält dein Passwort.'));
   return root;
 }
 

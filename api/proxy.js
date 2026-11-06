@@ -10,7 +10,7 @@ const { Readable } = require('node:stream');
 const { timingSafeEqual } = require('node:crypto');
 
 const MAX_REDIRECTS = 5;
-const PASS_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control'];
+const PASS_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control', 'etag', 'last-modified'];
 
 function isPrivateIp(ip) {
   if (net.isIPv6(ip)) {
@@ -78,6 +78,13 @@ function rewritePlaylist(text, baseUrl, key) {
     .join('\n');
 }
 
+// Dateiname für Content-Disposition: ASCII-Fallback plus UTF-8-Variante, ohne Pfad- und Steuerzeichen.
+function attachmentHeader(name) {
+  const clean = String(name || 'video').replace(/[\u0000-\u001f\u007f"\\/:*?<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150) || 'video';
+  const ascii = clean.replace(/[^\x20-\x7e]/g, '_').replace(/%/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.status(405).send('Method not allowed');
@@ -87,7 +94,7 @@ module.exports = async function handler(req, res) {
     res.status(500).send('ACCESS_KEY ist nicht konfiguriert');
     return;
   }
-  const { u, k } = req.query;
+  const { u, k, dl, name } = req.query;
   if (!keyOk(k)) {
     res.status(401).send('Zugriffsschlüssel ungültig');
     return;
@@ -129,6 +136,12 @@ module.exports = async function handler(req, res) {
     for (const h of PASS_HEADERS) {
       const v = upstream.headers.get(h);
       if (v) res.setHeader(h, v);
+    }
+    if (dl === '1' && upstream.ok) {
+      // Als Download ausliefern: Safari speichert die Datei dann in "Dateien" (Downloads), statt sie abzuspielen
+      res.setHeader('content-type', 'application/octet-stream');
+      res.setHeader('content-disposition', attachmentHeader(name));
+      res.setHeader('cache-control', 'no-store');
     }
     if (req.method === 'HEAD' || !upstream.body) {
       res.end();

@@ -331,6 +331,7 @@ function dlControl(desc, compact = false) {
       dlPrepare(m).catch(() => {}); // Datei fürs Teilen vorbereiten
       root.replaceChildren(el('span', 'dl-done', `✓ Offline verfügbar (${formatSize(m.size || m.got)})`),
         dlBox('dl-actions',
+          btn('In „Dateien“ laden', 'dl-small', () => dlSaveToFiles(m)),
           btn('In VLC laden', 'dl-small', () => dlVlcDownload(m)),
           btn('An VLC senden', 'dl-small', () => dlShare(m).catch(() => {})),
           btn('Löschen', 'dl-small', () => { if (confirm('Offline-Datei löschen?')) dlRemove(m.id); })));
@@ -406,6 +407,12 @@ async function dlGetPrepared(meta) {
 // noch nicht oder schon heruntergeladen ist.
 function dlVlcDownload(meta) {
   if (typeof openInVlcDownload === 'function') openInVlcDownload(dlUrl(meta));
+}
+
+// Der Download in der App liegt nur in ihrem geschützten Speicher. Für "Dateien" lädt Safari den Film neu.
+function dlSaveToFiles(meta) {
+  const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' '))}.${meta.ext}`;
+  if (typeof saveToFiles === 'function') saveToFiles(dlUrl(meta), name);
 }
 
 async function dlShare(meta) {
