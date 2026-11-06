@@ -331,8 +331,8 @@ function dlControl(desc, compact = false) {
       dlPrepare(m).catch(() => {}); // Datei fürs Teilen vorbereiten
       root.replaceChildren(el('span', 'dl-done', `✓ Offline verfügbar (${formatSize(m.size || m.got)})`),
         dlBox('dl-actions',
+          btn('In VLC laden', 'dl-small', () => dlVlcDownload(m)),
           btn('An VLC senden', 'dl-small', () => dlShare(m).catch(() => {})),
-          btn('In „Dateien“ sichern', 'dl-small', () => dlSave(m).catch(() => {})),
           btn('Löschen', 'dl-small', () => { if (confirm('Offline-Datei löschen?')) dlRemove(m.id); })));
       return;
     }
@@ -402,18 +402,11 @@ async function dlGetPrepared(meta) {
   }
 }
 
-// Datei in "Dateien" sichern (Download)
-async function dlSave(meta) {
-  const obj = await dlGetPrepared(meta);
-  const url = URL.createObjectURL(new File(obj.parts, obj.name, { type: DL_MIME[obj.ext] || 'video/mp4' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = obj.name;
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
-  dlNote('Speichern gestartet. Fortschritt und Datei findest du in der App „Dateien“, Ordner „Downloads“. Dort lange drücken, Teilen, VLC wählen.');
+// VLC lädt die Datei selbst vom Anbieter (kein Umweg über diese Web-App). Funktioniert auch, wenn der Film hier
+// noch nicht oder schon heruntergeladen ist.
+function dlVlcDownload(meta) {
+  const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' '))}.${meta.ext}`;
+  if (typeof openInVlcDownload === 'function') openInVlcDownload(dlUrl(meta), name);
 }
 
 async function dlShare(meta) {
@@ -432,7 +425,7 @@ async function dlShare(meta) {
     }
   }
   const why = lastErr ? `${lastErr.name}: ${lastErr.message}` : 'Das Teilen-Menü nimmt diese Datei nicht an.';
-  if (typeof toast === 'function') toast(`An VLC senden geht nicht (${why}).`, { label: 'In „Dateien“ sichern', fn: () => dlSave(meta).catch(() => {}) });
+  if (typeof toast === 'function') toast(`An VLC senden geht nicht (${why}).`, { label: 'VLC selbst laden lassen', fn: () => dlVlcDownload(meta) });
 }
 
 /* ----- Bereich "Offline" ----- */
