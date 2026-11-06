@@ -405,8 +405,7 @@ async function dlGetPrepared(meta) {
 // VLC lädt die Datei selbst vom Anbieter (kein Umweg über diese Web-App). Funktioniert auch, wenn der Film hier
 // noch nicht oder schon heruntergeladen ist.
 function dlVlcDownload(meta) {
-  const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' '))}.${meta.ext}`;
-  if (typeof openInVlcDownload === 'function') openInVlcDownload(dlUrl(meta), name);
+  if (typeof openInVlcDownload === 'function') openInVlcDownload(dlUrl(meta));
 }
 
 async function dlShare(meta) {

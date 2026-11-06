@@ -867,8 +867,10 @@ function toast(text, action, opts = {}) {
   toastTimer = setTimeout(() => show(t, false), opts.busy ? 60000 : 9000);
 }
 
-// VLC lädt die Datei selbst herunter und legt sie in seiner Bibliothek ab (dann lokal, offline und per AirPlay nutzbar).
-const vlcDownloadLink = (url, filename) => `vlc-x-callback://x-callback-url/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+// vlc://<Adresse>: VLC öffnet sich und fragt sichtbar "Herunterladen oder Abspielen?". Der Befehl .../download?url=...
+// wird zwar angenommen, zeigt aber weder bei Erfolg noch bei einem Fehler etwas an (VLC-Quellcode, URLHandler.swift).
+// Der Dateiname kommt dabei aus dem Pfad der Adresse (z. B. 123.mkv).
+const vlcPromptLink = (url) => `vlc://${url}`;
 
 function callVlc(link, failText) {
   let left = false;
@@ -883,8 +885,8 @@ function callVlc(link, failText) {
   }, 1800);
 }
 
-function openInVlcDownload(url, filename) {
-  callVlc(vlcDownloadLink(url, filename), 'VLC hat sich nicht geöffnet. Ist die App installiert? Alternativ den Link kopieren und in VLC unter „Netzwerk“ einfügen.');
+function openInVlcDownload(url) {
+  callVlc(vlcPromptLink(url), 'VLC hat sich nicht geöffnet. Ist die App installiert? Alternativ den Link kopieren und in VLC unter „Netzwerk“ einfügen.');
 }
 
 function openSheet(title, items) {
@@ -904,7 +906,7 @@ $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') show
 function vlcMenu(title, url, filename) {
   openSheet(title, [
     { label: '▶ In VLC abspielen', hint: 'Streamt direkt vom Anbieter', fn: () => openInVlc(url) },
-    { label: '⬇ In VLC herunterladen', hint: 'VLC speichert den Film selbst, danach offline und per AirPlay nutzbar', fn: () => openInVlcDownload(url, filename) },
+    { label: '⬇ In VLC herunterladen', hint: 'VLC fragt nach, dann „Herunterladen“ wählen. Danach offline und per AirPlay nutzbar', fn: () => openInVlcDownload(url) },
     { label: 'Link kopieren', hint: 'Für „Netzwerk“ in VLC. Der Link enthält dein Passwort', fn: async () => { if (await copyText(url)) toast('Link kopiert.'); } },
   ]);
 }
@@ -933,7 +935,7 @@ function vlcControl(url, filename) {
   open.addEventListener('click', () => openInVlc(url));
   const down = el('button', 'vlc-btn', '⬇ In VLC laden');
   down.type = 'button';
-  down.addEventListener('click', () => openInVlcDownload(url, filename));
+  down.addEventListener('click', () => openInVlcDownload(url));
   const copy = el('button', 'vlc-btn vlc-wide', 'Link kopieren');
   copy.type = 'button';
   copy.addEventListener('click', async () => {
@@ -941,7 +943,7 @@ function vlcControl(url, filename) {
     copy.textContent = ok ? '✓ Kopiert' : 'Link kopieren';
     if (ok) setTimeout(() => { copy.textContent = 'Link kopieren'; }, 2000);
   });
-  root.append(open, down, copy, el('p', 'vlc-note', '„In VLC laden“ lässt VLC den Film selbst speichern (lokal, offline, auch MKV, per AirPlay übertragbar). Der Link enthält dein Passwort.'));
+  root.append(open, down, copy, el('p', 'vlc-note', '„In VLC laden“: VLC fragt nach, dann „Herunterladen“ wählen. VLC speichert den Film selbst (lokal, offline, auch MKV, per AirPlay übertragbar). Der Name in VLC ist die Filmnummer. Der Link enthält dein Passwort.'));
   return root;
 }
 
