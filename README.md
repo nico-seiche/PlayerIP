@@ -24,6 +24,9 @@ Safari spielt HLS nativ, nur dann ist AirPlay möglich. Auf Desktop-Chrome läuf
   sonst das MKV im Browser um (`public/vendor/mkvstream.js`, experimentell, ohne AirPlay). Das läuft nur, wenn das
   Gerät Bild- und Tonformat ohnehin dekodieren kann (z. B. H.264/HEVC + AAC/AC-3, kein DTS). Die Daten laufen dabei
   über den Proxy (Vercel-Kontingent!).
+- Offline: Filme und Folgen lassen sich über „Herunterladen“ in den Speicher der PWA laden (`public/downloads.js`,
+  Stücke à 8 MB über den Proxy, in IndexedDB, fortsetzbar). Das läuft nur im Vordergrund; beim Sperren pausiert der
+  Download und läuft danach weiter. Kostet einmal so viel Vercel-Datenvolumen wie das Anschauen.
 - Der Proxy blockt private/lokale Ziele (SSRF-Schutz).
 
 ## MKV-Umwandlung neu bauen

@@ -60,7 +60,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6.5 5h11M9 2h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M10.5 11.5v5l4.2-2.5z" fill="currentColor"/></svg>
           <span><strong>Serien</strong><small>Nach Anbieter, Genre und Bewertung</small></span>
         </button>
-        <button class="home-fav" data-section="fav">★ Favoriten</button>
+        <div class="home-row">
+          <button class="home-fav" data-section="fav">★ Favoriten</button>
+          <button class="home-fav" data-section="offline">⬇ Offline <span id="offline-count" class="filter-badge" hidden></span></button>
+        </div>
+        <p id="home-offline" class="status" hidden>Keine Internetverbindung. Heruntergeladene Titel findest du unter „Offline“.</p>
       </div>
 
       <!-- Filme / Serien: Anbieter-Kacheln und weitere Kategorien -->
@@ -72,6 +76,13 @@
           <summary><span id="more-title">Weitere Kategorien</span></summary>
           <div id="more-list"></div>
         </details>
+      </div>
+
+      <!-- Offline: heruntergeladene Titel -->
+      <div id="offline" hidden>
+        <p id="offline-storage" class="status small"></p>
+        <p id="offline-empty" class="status" hidden>Noch nichts heruntergeladen. Auf der Seite eines Films oder einer Folge gibt es „Herunterladen“.</p>
+        <ul id="offline-list" class="off-list"></ul>
       </div>
 
       <!-- Liste mit Suche und Filtern -->
@@ -181,6 +192,7 @@
 
   <script src="/vendor/hls.min.js"></script>
   <script src="/providers.js"></script>
+  <script src="/downloads.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

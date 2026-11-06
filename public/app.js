@@ -236,7 +236,7 @@ function setStatus(text) {
 
 /* ---------- Navigation: Start -> Bereich -> Anbieter/Kategorie -> Liste ---------- */
 
-const SECTIONS = { live: 'Live', vod: 'Filme', series: 'Serien', fav: 'Favoriten' };
+const SECTIONS = { live: 'Live', vod: 'Filme', series: 'Serien', fav: 'Favoriten', offline: 'Offline' };
 const GROUPED = new Set(['vod', 'series']); // hier gibt es erst eine Auswahl nach Anbieter
 const nav = { section: null, group: null }; // group: { id, label, catIds: Set | null }
 const providers = (window.PROVIDERS || []).map((p) => ({ ...p, rx: new RegExp(p.re, 'i') }));
@@ -274,12 +274,15 @@ async function render() {
   const { section, group } = nav;
   const groups = isGroupsScreen();
   if (genreJob) genreJob.cancel = true;
+  const offline = section === 'offline';
   show($('#home'), !section);
   show($('#groups'), Boolean(section) && groups);
-  show($('#listview'), Boolean(section) && !groups);
+  show($('#listview'), Boolean(section) && !groups && !offline);
+  show($('#offline'), offline);
   show($('#nav-back'), Boolean(section));
   $('#nav-title').textContent = !section ? 'PlayerIP' : group ? group.label : SECTIONS[section];
   if (!section) { window.scrollTo(0, 0); return; }
+  if (offline) { await renderOffline(); window.scrollTo(0, 0); return; }
   if (groups) await renderGroups(); else await renderList();
 }
 
@@ -831,15 +834,19 @@ async function openMovie(it) {
   const token = openDetail(it.name);
   const { username: u, password: p } = cfg;
   const body = $('#detail-body');
+  const dlDesc = { id: `vod:${it.id}`, kind: 'vod', itemId: it.id, ext: it.ext, title: it.name, sub: '', icon: it.icon };
   const play = el('button', 'primary play', '▶ Abspielen');
-  play.addEventListener('click', () => playStream(
-    `${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null,
-    `${cfg.server}/movie/${u}/${p}/${it.id}.m3u8`));
+  play.addEventListener('click', () => {
+    const saved = dlMetas.get(dlDesc.id);
+    if (saved?.state === 'done') { playDownloaded(saved); return; } // lokal vorhanden: kein Datenverbrauch
+    playStream(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`, it.name, it.ext.toUpperCase(), null,
+      `${cfg.server}/movie/${u}/${p}/${it.id}.m3u8`);
+  });
   const fmtChip = { text: it.ext.toUpperCase(), cls: fmtClass(it.ext) };
   const langChip = it.lang && { text: LANGS[it.lang].label };
 
   renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
-  body.replaceChildren(play);
+  body.replaceChildren(play, dlControl(dlDesc));
   const sizeP = fileSize(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`).catch(() => null);
 
   try {
@@ -893,8 +900,9 @@ async function openSeries(it) {
         row.setAttribute('role', 'button');
         const label = el('span', 'name', episodeTitle(ep.title, it.name, ep.episode_num));
         const epExt = ep.container_extension || 'mp4';
-        row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()));
-        const go = () => playStream(
+        const dlDesc = { id: `ep:${ep.id}`, kind: 'ep', itemId: ep.id, ext: epExt, title: it.name, sub: `S${s} · ${label.textContent}`, icon: it.icon };
+        row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()), dlControl(dlDesc, true));
+        const go = () => dlMetas.get(dlDesc.id)?.state === 'done' ? playDownloaded(dlMetas.get(dlDesc.id)) : playStream(
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`,
           it.name, `S${s} · ${label.textContent}`, null,
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.m3u8`);
@@ -932,7 +940,7 @@ function launchRemux(cand, token, opts = {}) {
   note('MKV wird im Browser umgewandelt (experimentell) …');
   remuxCtx = { cand, token };
   import('/vendor/mkvstream.js')
-    .then(({ playMkv }) => playMkv(video, cand.src, {
+    .then(({ playMkv }) => playMkv(video, cand.blob || cand.src, {
       ...opts,
       onStatus: note,
       onError: (e) => { if (token === playToken) showPlayerError(`Umwandlung fehlgeschlagen: ${e.message}`); },
@@ -961,6 +969,7 @@ function stopRemux() {
 function teardownPlayer() {
   playToken++;
   stopRemux();
+  revokeLocal();
   remuxCtx = null;
   closeMenu();
   $('#audio-btn').hidden = true;
@@ -1055,6 +1064,38 @@ function tryCandidate(list, index, token) {
   video.onerror = next;
   video.src = cand.src;
   video.play().catch(() => {});
+}
+
+let localUrl = null;
+function revokeLocal() {
+  if (localUrl) { URL.revokeObjectURL(localUrl); localUrl = null; }
+}
+
+// Heruntergeladene Datei abspielen (offline): MP4 & Co. direkt, MKV über die Umwandlung im Browser
+async function playDownloaded(meta) {
+  $('#player-title').textContent = meta.title;
+  $('#player-sub').textContent = [meta.sub, 'Offline'].filter(Boolean).join(' · ');
+  if (!layers.includes('player')) pushLayer('player');
+  show($('#player'), true);
+  showUi();
+  stopRemux();
+  revokeLocal();
+  if (hls) { hls.destroy(); hls = null; }
+  const token = ++playToken;
+  showPlayerError('');
+  try {
+    const parts = await dlDb.chunksGet(meta.id);
+    if (token !== playToken) return;
+    const ext = String(meta.ext).toLowerCase();
+    const blob = new Blob(parts, { type: DL_MIME[ext] || 'video/mp4' });
+    if (ext === 'mkv' && !video.canPlayType('video/x-matroska') && canRemux()) { launchRemux({ kind: 'remux', blob }, token); return; }
+    localUrl = URL.createObjectURL(blob);
+    video.onerror = () => showPlayerError('Wiedergabe nicht möglich (Format wird von diesem Gerät nicht unterstützt).');
+    video.src = localUrl;
+    video.play().catch(() => {});
+  } catch (e) {
+    if (token === playToken) showPlayerError(`Die Offline-Datei konnte nicht geöffnet werden: ${e.message}`);
+  }
 }
 
 async function playStream(url, title, sub, liveId, alt) {
@@ -1264,8 +1305,16 @@ $('#logout-btn').addEventListener('click', async () => {
 
 /* ---------- Start ---------- */
 
+function updateOnlineBanner() {
+  show($('#home-offline'), navigator.onLine === false);
+}
+window.addEventListener('online', updateOnlineBanner);
+window.addEventListener('offline', updateOnlineBanner);
+
 function startBrowse() {
   showScreen('browse');
+  dlInit();
+  updateOnlineBanner();
   render();
 }
 

@@ -1,7 +1,7 @@
 // MKV im Browser abspielen: Matroska lesen, ohne Neukodierung in fragmentiertes MP4 umpacken
 // und per Media Source Extensions in ein <video> einspeisen. Läuft nur, wenn der Browser
 // Bild- und Tonformat des Films ohnehin dekodieren kann (z. B. H.264/HEVC + AAC/AC-3).
-import { Input, UrlSource, MATROSKA, Output, Mp4OutputFormat, NullTarget, Conversion } from 'mediabunny';
+import { Input, UrlSource, BlobSource, MATROSKA, Output, Mp4OutputFormat, NullTarget, Conversion } from 'mediabunny';
 
 const AHEAD = 45; // Sekunden, die vor der Abspielposition vorbereitet werden
 const STEP = 6; // Schrittweite beim Vorarbeiten (Sekunden)
@@ -15,7 +15,8 @@ export async function playMkv(video, url, { preferLangs = ['ger', 'deu', 'de'], 
   if (!MS) throw new Error('Dieser Browser unterstützt keine Media Source Extensions.');
 
   onStatus('Lese Dateiinfos …');
-  const input = new Input({ source: new UrlSource(url), formats: [MATROSKA] });
+  // url: Adresse (Streaming über Proxy) oder ein Blob/File (heruntergeladene Datei, offline)
+  const input = new Input({ source: typeof url === 'string' ? new UrlSource(url) : new BlobSource(url), formats: [MATROSKA] });
   const duration = (await input.getDurationFromMetadata()) ?? (await input.computeDuration());
 
   // ---- Bild
