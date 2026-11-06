@@ -288,6 +288,13 @@ document.addEventListener('visibilitychange', dlAutoResume);
 /* ----- Oberfläche ----- */
 // el() nimmt nur Text; für Kinder-Elemente:
 const dlBox = (cls, ...children) => { const d = el('div', cls); d.append(...children); return d; };
+function dlEta(m) {
+  if (m.state !== 'downloading' || !m.size || dl.speed < 1e5) return '';
+  const sec = Math.round((m.size - m.got) / dl.speed);
+  if (sec < 90) return ` · noch ca. ${Math.max(5, sec)} Sek.`;
+  if (sec < 5400) return ` · noch ca. ${Math.round(sec / 60)} Min.`;
+  return ` · noch ca. ${Math.floor(sec / 3600)} Std. ${Math.round((sec % 3600) / 60)} Min.`;
+}
 const dlPct = (m) => (m.size ? Math.min(100, Math.floor((m.got / m.size) * 100)) : 0);
 const dlActive = (m) => m && m.state !== 'done';
 const dlStateText = (m) => ({
@@ -347,7 +354,7 @@ function dlProgress(m) {
   const fill = el('div');
   fill.style.width = `${dlPct(m)}%`;
   bar.append(fill);
-  const text = el('div', 'dl-text', `${dlPct(m)} % · ${formatSize(m.got)}${m.size ? ` von ${formatSize(m.size)}` : ''} · ${dlStateText(m)}${m.error ? ` – ${m.error}` : ''}`);
+  const text = el('div', 'dl-text', `${dlPct(m)} % · ${formatSize(m.got)}${m.size ? ` von ${formatSize(m.size)}` : ''} · ${dlStateText(m)}${dlEta(m)}${m.error ? ` – ${m.error}` : ''}`);
   return dlBox('dl-progress', bar, text);
 }
 
@@ -384,9 +391,11 @@ const dlNote = (t) => { if (typeof toast === 'function') toast(t); };
 async function dlGetPrepared(meta) {
   const ready = dlReady.get(meta.id);
   if (ready) return ready;
-  dlNote('Bereite die Datei vor …');
+  if (typeof toast === 'function') toast(`Bereite die Datei vor (${formatSize(meta.size || meta.got)}) …`, null, { busy: true });
   try {
-    return await Promise.race([dlPrepare(meta), new Promise((_, rej) => setTimeout(() => rej(new Error('Zeitüberschreitung beim Lesen aus dem Speicher')), 30000))]);
+    const obj = await Promise.race([dlPrepare(meta), new Promise((_, rej) => setTimeout(() => rej(new Error('Zeitüberschreitung beim Lesen aus dem Speicher')), 30000))]);
+    if (typeof hideToast === 'function') hideToast();
+    return obj;
   } catch (e) {
     dlNote(`Die Datei konnte nicht gelesen werden (${e.message}).`);
     throw e;

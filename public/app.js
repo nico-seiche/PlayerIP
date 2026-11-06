@@ -845,9 +845,17 @@ async function copyText(text) {
 }
 
 let toastTimer;
-function toast(text, action) {
+function hideToast() {
+  clearTimeout(toastTimer);
+  show($('#toast'), false);
+}
+
+// opts.busy: läuft etwas im Hintergrund? Dann zeigt ein laufender Balken, dass die App arbeitet.
+function toast(text, action, opts = {}) {
   const t = $('#toast');
   t.replaceChildren(el('span', null, text));
+  t.classList.toggle('busy', Boolean(opts.busy));
+  if (opts.busy) t.append(el('div', 'toast-bar'));
   if (action) {
     const b = el('button', null, action.label);
     b.type = 'button';
@@ -856,7 +864,7 @@ function toast(text, action) {
   }
   show(t, true);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => show(t, false), 9000);
+  toastTimer = setTimeout(() => show(t, false), opts.busy ? 60000 : 9000);
 }
 
 // VLC lädt die Datei selbst herunter und legt sie in seiner Bibliothek ab (dann lokal, offline und per AirPlay nutzbar).
