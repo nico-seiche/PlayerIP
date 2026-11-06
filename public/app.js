@@ -830,6 +830,68 @@ function techInfo(info) {
   return { lines: lines.filter((l) => l && !/:\s*$/.test(l)), chips };
 }
 
+/* ---------- In VLC öffnen ---------- */
+// VLC (iOS) nimmt Links dieser Form entgegen und spielt den Film direkt vom Anbieter ab, ohne Proxy.
+const vlcLink = (url) => `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`;
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try { window.prompt('Link kopieren:', text); } catch { /* ignorieren */ }
+    return false;
+  }
+}
+
+let toastTimer;
+function toast(text, action) {
+  const t = $('#toast');
+  t.replaceChildren(el('span', null, text));
+  if (action) {
+    const b = el('button', null, action.label);
+    b.type = 'button';
+    b.addEventListener('click', () => { show(t, false); action.fn(); });
+    t.append(b);
+  }
+  show(t, true);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => show(t, false), 9000);
+}
+
+function openInVlc(url) {
+  let left = false;
+  const onHide = () => { if (document.hidden) left = true; };
+  document.addEventListener('visibilitychange', onHide);
+  const a = document.createElement('a');
+  a.href = vlcLink(url);
+  a.click();
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', onHide);
+    if (left) return;
+    toast('VLC hat sich nicht geöffnet. Ist die App installiert?', {
+      label: 'Link kopieren',
+      fn: async () => { if (await copyText(url)) toast('Link kopiert. In VLC: Netzwerk, Netzwerkstream öffnen, Link einfügen.'); },
+    });
+  }, 1800);
+}
+
+function vlcControl(url) {
+  const root = el('div', 'vlc');
+  const open = el('button', 'vlc-btn', '▶ In VLC öffnen');
+  open.type = 'button';
+  open.addEventListener('click', () => openInVlc(url));
+  const copy = el('button', 'vlc-btn', 'Link kopieren');
+  copy.type = 'button';
+  copy.addEventListener('click', async () => {
+    const ok = await copyText(url);
+    copy.textContent = ok ? '✓ Kopiert' : 'Link kopieren';
+    if (ok) setTimeout(() => { copy.textContent = 'Link kopieren'; }, 2000);
+  });
+  root.append(open, copy, el('p', 'vlc-note', 'Spielt direkt in VLC ab, auch MKV, und lässt sich dort per AirPlay übertragen. Der Link enthält dein Passwort.'));
+  return root;
+}
+
 async function openMovie(it) {
   const token = openDetail(it.name);
   const { username: u, password: p } = cfg;
@@ -846,7 +908,7 @@ async function openMovie(it) {
   const langChip = it.lang && { text: LANGS[it.lang].label };
 
   renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
-  body.replaceChildren(play, dlControl(dlDesc));
+  body.replaceChildren(play, dlControl(dlDesc), vlcControl(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`));
   const sizeP = fileSize(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`).catch(() => null);
 
   try {
@@ -901,7 +963,12 @@ async function openSeries(it) {
         const label = el('span', 'name', episodeTitle(ep.title, it.name, ep.episode_num));
         const epExt = ep.container_extension || 'mp4';
         const dlDesc = { id: `ep:${ep.id}`, kind: 'ep', itemId: ep.id, ext: epExt, title: it.name, sub: `S${s} · ${label.textContent}`, icon: it.icon };
-        row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()), dlControl(dlDesc, true));
+        const vlc = el('button', 'dl-circle vlc-circle', 'VLC');
+        vlc.type = 'button';
+        vlc.setAttribute('aria-label', 'In VLC öffnen');
+        vlc.addEventListener('click', (e) => { e.stopPropagation(); openInVlc(`${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`); });
+        vlc.addEventListener('keydown', (e) => e.stopPropagation());
+        row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()), vlc, dlControl(dlDesc, true));
         const go = () => dlMetas.get(dlDesc.id)?.state === 'done' ? playDownloaded(dlMetas.get(dlDesc.id)) : playStream(
           `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`,
           it.name, `S${s} · ${label.textContent}`, null,
