@@ -284,3 +284,5 @@ button.play { width: 100%; padding: 14px; font-size: 17px; }
 .off-sub { color: var(--muted); font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
 .dl-play { width: 100%; padding: 12px; }
 .dl > .dl-small { justify-self: start; }
+.player .icon.mirror { opacity: .8; }
+.player .error.note { color: #fff; background: #000d; }

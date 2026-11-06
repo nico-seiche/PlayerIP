@@ -926,6 +926,7 @@ let idleTimer;
 
 function showPlayerError(msg) {
   const el = $('#player-error');
+  el.classList.remove('note');
   el.textContent = msg || '';
   show(el, Boolean(msg));
 }
@@ -935,6 +936,7 @@ let remux = null;
 // Startet die Umwandlung eines MKV im Browser; opts: { audioIndex, startAt } beim Wechsel der Tonspur.
 function launchRemux(cand, token, opts = {}) {
   stopRemux();
+  setAirplayMode('mirror');
   const base = $('#player-sub').textContent.split(' · ')[0];
   const note = (txt) => { if (token === playToken) $('#player-sub').textContent = [base, txt].filter(Boolean).join(' · '); };
   note('MKV wird im Browser umgewandelt (experimentell) …');
@@ -970,6 +972,7 @@ function teardownPlayer() {
   playToken++;
   stopRemux();
   revokeLocal();
+  setAirplayMode('native');
   remuxCtx = null;
   closeMenu();
   $('#audio-btn').hidden = true;
@@ -1039,6 +1042,7 @@ function tryCandidate(list, index, token) {
   const cand = list[index];
   showPlayerError('');
   stopRemux();
+  if (cand.kind !== 'remux') setAirplayMode('native');
   if (hls) { hls.destroy(); hls = null; }
 
   const next = async () => {
@@ -1090,6 +1094,7 @@ async function playDownloaded(meta) {
     const blob = new Blob(parts, { type: DL_MIME[ext] || 'video/mp4' });
     if (ext === 'mkv' && !video.canPlayType('video/x-matroska') && canRemux()) { launchRemux({ kind: 'remux', blob }, token); return; }
     localUrl = URL.createObjectURL(blob);
+    setAirplayMode('mirror'); // blob: kann der Apple TV nicht abrufen
     video.onerror = () => showPlayerError('Wiedergabe nicht möglich (Format wird von diesem Gerät nicht unterstützt).');
     video.src = localUrl;
     video.play().catch(() => {});
@@ -1271,12 +1276,46 @@ if (video.audioTracks) {
   video.audioTracks.addEventListener?.('removetrack', updateAudioButton);
 }
 
-// AirPlay (nur Safari/WebKit, nicht bei umgewandelten MKV): Knopf erscheint, sobald ein Apple TV erreichbar ist.
-if (window.WebKitPlaybackTargetAvailabilityEvent) {
+/* AirPlay: Safari gibt dem Apple TV die Adresse des Videos, und der lädt es selbst. Das geht nur bei echten
+   Adressen (MP4/HLS vom Anbieter oder über den Proxy). Bei umgewandelten MKV (Media Source) und heruntergeladenen
+   Dateien (blob:) hat der Apple TV nichts zum Abrufen. Dort bleibt nur die Bildschirmsynchronisierung. */
+const isSafari = Boolean(window.WebKitPlaybackTargetAvailabilityEvent);
+let airplayMode = 'native'; // 'native' = AirPlay-Video möglich, 'mirror' = nur Bildschirmsynchronisierung
+let airAvailable = false;
+let noteTimer;
+
+function updateAirplayButton() {
+  show($('#airplay'), isSafari && (airplayMode === 'mirror' || airAvailable));
+  $('#airplay').classList.toggle('mirror', airplayMode === 'mirror');
+}
+
+function setAirplayMode(mode) {
+  airplayMode = mode;
+  video.disableRemotePlayback = mode === 'mirror'; // vorher blieb das nach einem MKV für alle weiteren Videos gesetzt
+  updateAirplayButton();
+}
+
+function showPlayerNote(text, ms = 10000) {
+  const e = $('#player-error');
+  e.textContent = text;
+  e.classList.add('note');
+  show(e, true);
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => { if (e.classList.contains('note')) { show(e, false); e.classList.remove('note'); } }, ms);
+}
+
+if (isSafari) {
   video.addEventListener('webkitplaybacktargetavailabilitychanged', (e) => {
-    show($('#airplay'), e.availability === 'available');
+    airAvailable = e.availability === 'available';
+    updateAirplayButton();
   });
-  $('#airplay').addEventListener('click', () => video.webkitShowPlaybackTargetPicker());
+  $('#airplay').addEventListener('click', () => {
+    if (airplayMode === 'mirror') {
+      showPlayerNote('Bei MKV-Filmen und heruntergeladenen Titeln geht kein AirPlay-Video, nur Spiegeln: Kontrollzentrum öffnen, „Bildschirmsynchronisierung“ antippen und den Apple TV wählen. Alternativ einen Film im MP4-Format nehmen.');
+    } else {
+      video.webkitShowPlaybackTargetPicker();
+    }
+  });
 }
 
 /* ---------- Einstellungen ---------- */
