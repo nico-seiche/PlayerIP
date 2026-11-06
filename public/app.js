@@ -859,6 +859,48 @@ function toast(text, action) {
   toastTimer = setTimeout(() => show(t, false), 9000);
 }
 
+// VLC lädt die Datei selbst herunter und legt sie in seiner Bibliothek ab (dann lokal, offline und per AirPlay nutzbar).
+const vlcDownloadLink = (url, filename) => `vlc-x-callback://x-callback-url/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+
+function callVlc(link, failText) {
+  let left = false;
+  const onHide = () => { if (document.hidden) left = true; };
+  document.addEventListener('visibilitychange', onHide);
+  const a = document.createElement('a');
+  a.href = link;
+  a.click();
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', onHide);
+    if (!left) toast(failText || 'VLC hat sich nicht geöffnet. Ist die App installiert?');
+  }, 1800);
+}
+
+function openInVlcDownload(url, filename) {
+  callVlc(vlcDownloadLink(url, filename), 'VLC hat sich nicht geöffnet. Ist die App installiert? Alternativ den Link kopieren und in VLC unter „Netzwerk“ einfügen.');
+}
+
+function openSheet(title, items) {
+  $('#sheet-title').textContent = title;
+  $('#sheet-items').replaceChildren(...items.map((i) => {
+    const b = el('button', null, i.label);
+    b.type = 'button';
+    if (i.hint) b.append(el('small', null, i.hint));
+    b.addEventListener('click', () => { show($('#sheet'), false); i.fn(); });
+    return b;
+  }));
+  show($('#sheet'), true);
+}
+$('#sheet-cancel').addEventListener('click', () => show($('#sheet'), false));
+$('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') show($('#sheet'), false); });
+
+function vlcMenu(title, url, filename) {
+  openSheet(title, [
+    { label: '▶ In VLC abspielen', hint: 'Streamt direkt vom Anbieter', fn: () => openInVlc(url) },
+    { label: '⬇ In VLC herunterladen', hint: 'VLC speichert den Film selbst, danach offline und per AirPlay nutzbar', fn: () => openInVlcDownload(url, filename) },
+    { label: 'Link kopieren', hint: 'Für „Netzwerk“ in VLC. Der Link enthält dein Passwort', fn: async () => { if (await copyText(url)) toast('Link kopiert.'); } },
+  ]);
+}
+
 function openInVlc(url) {
   let left = false;
   const onHide = () => { if (document.hidden) left = true; };
@@ -876,19 +918,22 @@ function openInVlc(url) {
   }, 1800);
 }
 
-function vlcControl(url) {
+function vlcControl(url, filename) {
   const root = el('div', 'vlc');
-  const open = el('button', 'vlc-btn', '▶ In VLC öffnen');
+  const open = el('button', 'vlc-btn', '▶ In VLC abspielen');
   open.type = 'button';
   open.addEventListener('click', () => openInVlc(url));
-  const copy = el('button', 'vlc-btn', 'Link kopieren');
+  const down = el('button', 'vlc-btn', '⬇ In VLC laden');
+  down.type = 'button';
+  down.addEventListener('click', () => openInVlcDownload(url, filename));
+  const copy = el('button', 'vlc-btn vlc-wide', 'Link kopieren');
   copy.type = 'button';
   copy.addEventListener('click', async () => {
     const ok = await copyText(url);
     copy.textContent = ok ? '✓ Kopiert' : 'Link kopieren';
     if (ok) setTimeout(() => { copy.textContent = 'Link kopieren'; }, 2000);
   });
-  root.append(open, copy, el('p', 'vlc-note', 'Spielt direkt in VLC ab, auch MKV, und lässt sich dort per AirPlay übertragen. Der Link enthält dein Passwort.'));
+  root.append(open, down, copy, el('p', 'vlc-note', '„In VLC laden“ lässt VLC den Film selbst speichern (lokal, offline, auch MKV, per AirPlay übertragbar). Der Link enthält dein Passwort.'));
   return root;
 }
 
@@ -908,7 +953,7 @@ async function openMovie(it) {
   const langChip = it.lang && { text: LANGS[it.lang].label };
 
   renderHead({ cover: it.icon, chips: [fmtChip, langChip], lines: [], plot: '' });
-  body.replaceChildren(play, dlControl(dlDesc), vlcControl(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`));
+  body.replaceChildren(play, dlControl(dlDesc), vlcControl(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`, `${it.name}.${it.ext}`));
   const sizeP = fileSize(`${cfg.server}/movie/${u}/${p}/${it.id}.${it.ext}`).catch(() => null);
 
   try {
@@ -966,7 +1011,10 @@ async function openSeries(it) {
         const vlc = el('button', 'dl-circle vlc-circle', 'VLC');
         vlc.type = 'button';
         vlc.setAttribute('aria-label', 'In VLC öffnen');
-        vlc.addEventListener('click', (e) => { e.stopPropagation(); openInVlc(`${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`); });
+        vlc.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vlcMenu(`${it.name} · ${label.textContent}`, `${cfg.server}/series/${cfg.username}/${cfg.password}/${ep.id}.${epExt}`, `${it.name} S${s} ${label.textContent}.${epExt}`);
+        });
         vlc.addEventListener('keydown', (e) => e.stopPropagation());
         row.append(label, el('span', `fmt ${fmtClass(epExt)}`, epExt.toUpperCase()), vlc, dlControl(dlDesc, true));
         const go = () => dlMetas.get(dlDesc.id)?.state === 'done' ? playDownloaded(dlMetas.get(dlDesc.id)) : playStream(

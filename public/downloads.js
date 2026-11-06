@@ -324,7 +324,8 @@ function dlControl(desc, compact = false) {
       dlPrepare(m).catch(() => {}); // Datei fürs Teilen vorbereiten
       root.replaceChildren(el('span', 'dl-done', `✓ Offline verfügbar (${formatSize(m.size || m.got)})`),
         dlBox('dl-actions',
-          btn('Datei an VLC senden', 'dl-small', async function sendToVlc() { try { await dlShare(m); } catch (e) { if (typeof toast === 'function') toast(`Senden fehlgeschlagen: ${e.message}`); } }),
+          btn('An VLC senden', 'dl-small', () => dlShare(m).catch(() => {})),
+          btn('In „Dateien“ sichern', 'dl-small', () => dlSave(m).catch(() => {})),
           btn('Löschen', 'dl-small', () => { if (confirm('Offline-Datei löschen?')) dlRemove(m.id); })));
       return;
     }
@@ -377,9 +378,24 @@ function dlForget(id) {
   dlReady.delete(id);
 }
 
-// Datei in "Dateien" sichern (Download), falls das Teilen-Menü nicht geht
+const dlNote = (t) => { if (typeof toast === 'function') toast(t); };
+
+// Datei vorbereiten, mit Zeitlimit und sichtbarer Rückmeldung (sonst wirkt der Knopf bei großen Filmen wie tot)
+async function dlGetPrepared(meta) {
+  const ready = dlReady.get(meta.id);
+  if (ready) return ready;
+  dlNote('Bereite die Datei vor …');
+  try {
+    return await Promise.race([dlPrepare(meta), new Promise((_, rej) => setTimeout(() => rej(new Error('Zeitüberschreitung beim Lesen aus dem Speicher')), 30000))]);
+  } catch (e) {
+    dlNote(`Die Datei konnte nicht gelesen werden (${e.message}).`);
+    throw e;
+  }
+}
+
+// Datei in "Dateien" sichern (Download)
 async function dlSave(meta) {
-  const obj = dlReady.get(meta.id) || await dlPrepare(meta);
+  const obj = await dlGetPrepared(meta);
   const url = URL.createObjectURL(new File(obj.parts, obj.name, { type: DL_MIME[obj.ext] || 'video/mp4' }));
   const a = document.createElement('a');
   a.href = url;
@@ -387,12 +403,12 @@ async function dlSave(meta) {
   document.body.append(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
-  if (typeof toast === 'function') toast('Datei gesichert (App „Dateien“, Ordner „Downloads“). Dort lange drücken, Teilen, VLC wählen.');
+  setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+  dlNote('Speichern gestartet. Fortschritt und Datei findest du in der App „Dateien“, Ordner „Downloads“. Dort lange drücken, Teilen, VLC wählen.');
 }
 
 async function dlShare(meta) {
-  const obj = dlReady.get(meta.id) || await dlPrepare(meta); // vorbereitet: kein await, also noch im Tipp-Ereignis
+  const obj = dlReady.get(meta.id) || await dlGetPrepared(meta); // vorbereitet: kein await, also noch im Tipp-Ereignis
   let lastErr = null;
   // Zuerst mit dem echten Typ, dann als allgemeines Video (iOS erkennt MKV beim Teilen nicht immer)
   for (const type of [...new Set([DL_MIME[obj.ext] || 'video/mp4', 'video/mp4'])]) {
