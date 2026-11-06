@@ -111,6 +111,7 @@ async function dlRemove(id) {
   if (!m) return;
   if (dl.active?.id === id) dl.active.ctl.abort();
   dlMetas.delete(id);
+  dlForget(id);
   await dlDb.remove(id).catch(() => {});
   dlEmit(m, true);
 }
@@ -320,6 +321,7 @@ function dlControl(desc, compact = false) {
     }
     if (!m) { root.replaceChildren(btn('⬇ Herunterladen', 'dl-btn', () => dlStart(desc))); return; }
     if (m.state === 'done') {
+      dlPrepare(m).catch(() => {}); // Datei fürs Teilen vorbereiten
       root.replaceChildren(el('span', 'dl-done', `✓ Offline verfügbar (${formatSize(m.size || m.got)})`),
         dlBox('dl-actions',
           btn('Datei an VLC senden', 'dl-small', async function sendToVlc() { try { await dlShare(m); } catch (e) { if (typeof toast === 'function') toast(`Senden fehlgeschlagen: ${e.message}`); } }),
@@ -350,34 +352,62 @@ function dlProgress(m) {
 
 /* ----- Datei an VLC (oder andere Apps) senden ----- */
 // Der Download liegt im Speicher dieser Web-App, andere Apps kommen nicht heran. Über das Teilen-Menü von iOS
-// ("VLC" erscheint dort für Videodateien) bekommt VLC eine eigene Kopie. Ohne Teilen-Menü: Datei in "Dateien" sichern.
+// ("VLC" erscheint dort für Videodateien) bekommt VLC eine eigene Kopie. iOS erlaubt navigator.share() nur direkt
+// nach dem Tipp. Darum wird die Datei schon beim Anzeigen des Knopfes vorbereitet (dlPrepare), damit der Aufruf
+// beim Tipp ohne Wartezeit passiert.
 const dlSafeName = (s) => String(s).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Film';
+const dlPrep = new Map(); // id -> Promise
+const dlReady = new Map(); // id -> { parts, name, ext } (fertig vorbereitet)
+
+function dlPrepare(meta) {
+  if (!dlPrep.has(meta.id)) {
+    const ext = String(meta.ext || 'mp4').toLowerCase();
+    const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' - '))}.${ext}`;
+    dlPrep.set(meta.id, dlDb.chunksGet(meta.id).then((parts) => {
+      const obj = { parts, name, ext };
+      dlReady.set(meta.id, obj);
+      return obj;
+    }).catch((e) => { dlPrep.delete(meta.id); throw e; }));
+  }
+  return dlPrep.get(meta.id);
+}
+
+function dlForget(id) {
+  dlPrep.delete(id);
+  dlReady.delete(id);
+}
+
+// Datei in "Dateien" sichern (Download), falls das Teilen-Menü nicht geht
+async function dlSave(meta) {
+  const obj = dlReady.get(meta.id) || await dlPrepare(meta);
+  const url = URL.createObjectURL(new File(obj.parts, obj.name, { type: DL_MIME[obj.ext] || 'video/mp4' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = obj.name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+  if (typeof toast === 'function') toast('Datei gesichert (App „Dateien“, Ordner „Downloads“). Dort lange drücken, Teilen, VLC wählen.');
+}
 
 async function dlShare(meta) {
-  const parts = await dlDb.chunksGet(meta.id);
-  const ext = String(meta.ext || 'mp4').toLowerCase();
-  const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' - '))}.${ext}`;
+  const obj = dlReady.get(meta.id) || await dlPrepare(meta); // vorbereitet: kein await, also noch im Tipp-Ereignis
+  let lastErr = null;
   // Zuerst mit dem echten Typ, dann als allgemeines Video (iOS erkennt MKV beim Teilen nicht immer)
-  for (const type of [...new Set([DL_MIME[ext] || 'video/mp4', 'video/mp4'])]) {
-    const file = new File(parts, name, { type });
+  for (const type of [...new Set([DL_MIME[obj.ext] || 'video/mp4', 'video/mp4'])]) {
+    const file = new File(obj.parts, obj.name, { type });
     if (!navigator.canShare?.({ files: [file] })) continue;
     try {
       await navigator.share({ files: [file], title: meta.title });
       return;
     } catch (e) {
       if (e.name === 'AbortError') return; // Menü geschlossen
+      lastErr = e;
     }
   }
-  // Fallback: als Datei sichern (landet in "Dateien", von dort an VLC senden)
-  const url = URL.createObjectURL(new File(parts, name, { type: DL_MIME[ext] || 'video/mp4' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
-  if (typeof toast === 'function') toast('Datei gesichert (Ordner „Downloads“ in „Dateien“). Dort lange drücken, Teilen, VLC wählen.');
+  const why = lastErr ? `${lastErr.name}: ${lastErr.message}` : 'Das Teilen-Menü nimmt diese Datei nicht an.';
+  if (typeof toast === 'function') toast(`An VLC senden geht nicht (${why}).`, { label: 'In „Dateien“ sichern', fn: () => dlSave(meta).catch(() => {}) });
 }
 
 /* ----- Bereich "Offline" ----- */
