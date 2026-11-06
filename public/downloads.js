@@ -321,7 +321,9 @@ function dlControl(desc, compact = false) {
     if (!m) { root.replaceChildren(btn('⬇ Herunterladen', 'dl-btn', () => dlStart(desc))); return; }
     if (m.state === 'done') {
       root.replaceChildren(el('span', 'dl-done', `✓ Offline verfügbar (${formatSize(m.size || m.got)})`),
-        btn('Löschen', 'dl-small', () => { if (confirm('Offline-Datei löschen?')) dlRemove(m.id); }));
+        dlBox('dl-actions',
+          btn('Datei an VLC senden', 'dl-small', async function sendToVlc() { try { await dlShare(m); } catch (e) { if (typeof toast === 'function') toast(`Senden fehlgeschlagen: ${e.message}`); } }),
+          btn('Löschen', 'dl-small', () => { if (confirm('Offline-Datei löschen?')) dlRemove(m.id); })));
       return;
     }
     root.replaceChildren(dlProgress(m), dlBox('dl-actions',
@@ -344,6 +346,38 @@ function dlProgress(m) {
   bar.append(fill);
   const text = el('div', 'dl-text', `${dlPct(m)} % · ${formatSize(m.got)}${m.size ? ` von ${formatSize(m.size)}` : ''} · ${dlStateText(m)}${m.error ? ` – ${m.error}` : ''}`);
   return dlBox('dl-progress', bar, text);
+}
+
+/* ----- Datei an VLC (oder andere Apps) senden ----- */
+// Der Download liegt im Speicher dieser Web-App, andere Apps kommen nicht heran. Über das Teilen-Menü von iOS
+// ("VLC" erscheint dort für Videodateien) bekommt VLC eine eigene Kopie. Ohne Teilen-Menü: Datei in "Dateien" sichern.
+const dlSafeName = (s) => String(s).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'Film';
+
+async function dlShare(meta) {
+  const parts = await dlDb.chunksGet(meta.id);
+  const ext = String(meta.ext || 'mp4').toLowerCase();
+  const name = `${dlSafeName([meta.title, meta.sub].filter(Boolean).join(' - '))}.${ext}`;
+  // Zuerst mit dem echten Typ, dann als allgemeines Video (iOS erkennt MKV beim Teilen nicht immer)
+  for (const type of [...new Set([DL_MIME[ext] || 'video/mp4', 'video/mp4'])]) {
+    const file = new File(parts, name, { type });
+    if (!navigator.canShare?.({ files: [file] })) continue;
+    try {
+      await navigator.share({ files: [file], title: meta.title });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // Menü geschlossen
+    }
+  }
+  // Fallback: als Datei sichern (landet in "Dateien", von dort an VLC senden)
+  const url = URL.createObjectURL(new File(parts, name, { type: DL_MIME[ext] || 'video/mp4' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+  if (typeof toast === 'function') toast('Datei gesichert (Ordner „Downloads“ in „Dateien“). Dort lange drücken, Teilen, VLC wählen.');
 }
 
 /* ----- Bereich "Offline" ----- */
