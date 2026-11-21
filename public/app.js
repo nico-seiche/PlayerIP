@@ -864,7 +864,7 @@ function toast(text, action, opts = {}) {
   }
   show(t, true);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => show(t, false), opts.busy ? 60000 : 9000);
+  toastTimer = setTimeout(() => show(t, false), opts.busy ? 60000 : (opts.ms || 9000));
 }
 
 // vlc://<Adresse>: VLC öffnet sich und fragt sichtbar "Herunterladen oder Abspielen?". Der Befehl .../download?url=...
@@ -1227,22 +1227,39 @@ async function describeFailure(urls) {
   return `Wiedergabe nicht möglich (Fehlercode ${video.error?.code ?? '–'}).\n${lines.join('\n')}`;
 }
 
-/* Schwarzer Bildschirm ohne Fehlermeldung? Wenn nach 15 s noch nichts läuft, fragt die App den Server und zeigt, was er antwortet. */
+/* Schwarzer Bildschirm ohne Fehlermeldung? Nach 20 s weist die App darauf hin. Die Diagnose (Anfragen an den Anbieter)
+   startet nur auf Knopfdruck und stoppt vorher die Wiedergabe: Viele Anbieter erlauben nur EINE Verbindung, eine zweite
+   würde den Sender zusätzlich stören. */
 let stallTimer;
+function stopPlayback() {
+  playToken++;
+  clearTimeout(stallTimer);
+  stopRemux();
+  revokeLocal();
+  if (hls) { hls.destroy(); hls = null; }
+  video.onerror = null;
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
 function armWatchdog(urls, token) {
   clearTimeout(stallTimer);
-  stallTimer = setTimeout(async () => {
+  stallTimer = setTimeout(() => {
     if (token !== playToken || video.readyState >= 3 || !$('#player-error').hidden) return;
-    const lines = await probeLines(urls);
-    if (token !== playToken || video.readyState >= 3) return;
-    showPlayerError(`Noch kein Bild nach ${Math.round((window.__watchdogMs || 20000) / 1000)} Sekunden.\n${lines.join('\n')}`);
-    $('#player-error').dataset.kind = 'stall';
+    toast(`Noch kein Bild nach ${Math.round((window.__watchdogMs || 20000) / 1000)} Sekunden. Läuft der Sender gerade in einer anderen App, erlaubt dein Anbieter vielleicht nur eine Verbindung.`, {
+      label: 'Diagnose',
+      fn: async () => {
+        stopPlayback(); // erst alle eigenen Verbindungen schließen, dann abfragen
+        showPlayerError('Prüfe die Verbindung …');
+        const lines = await probeLines(urls);
+        showPlayerError(`Diagnose (Wiedergabe gestoppt):\n${lines.join('\n')}`);
+      },
+    }, { ms: 30000 });
   }, window.__watchdogMs || 20000);
 }
 video.addEventListener('playing', () => {
   clearTimeout(stallTimer);
-  const e = $('#player-error');
-  if (e.dataset.kind === 'stall') { showPlayerError(''); delete e.dataset.kind; }
 });
 
 function attach(urls) {
@@ -1557,6 +1574,13 @@ $('#refresh-btn').addEventListener('click', async () => {
   $('#settings').close();
   render();
 });
+// Notbremse: alle Verbindungen dieser App zum Anbieter und zum Proxy beenden (Wiedergabe, Downloads, Umwandlung)
+$('#disconnect-btn').addEventListener('click', () => {
+  for (const m of dlMetas.values()) if (m.state === 'downloading' || m.state === 'queued') dlPause(m.id);
+  stopPlayback();
+  location.reload(); // beendet auch alles andere, was noch offen sein könnte
+});
+
 $('#logout-btn').addEventListener('click', async () => {
   store.del('cfg');
   await idb.clear();
