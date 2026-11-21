@@ -1163,28 +1163,63 @@ function buildCandidates(urls) {
   return list;
 }
 
-async function probe(url) {
-  const ext = (new URL(url).pathname.match(/\.(\w+)$/) || [])[1] || '?';
+// Kurzer Blick auf eine Antwort (mit Zeitlimit): Status, Typ, erste Bytes bzw. Text, Dauer
+async function peek(href, headers) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  const t0 = performance.now();
   try {
-    const r = await fetch(proxify(url), { headers: { Range: 'bytes=0-0' } });
+    const r = await fetch(href, { headers, signal: ctl.signal });
     const type = (r.headers.get('content-type') || '').split(';')[0];
-    let note = '';
-    if (/text|json|mpegurl/.test(type)) {
-      note = (await r.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
-    } else {
-      r.body?.cancel();
+    let text = '';
+    let bytes = 0;
+    if (/text|json|mpegurl|xml/.test(type)) {
+      text = await r.text();
+    } else if (r.body) {
+      const reader = r.body.getReader();
+      const { value } = await reader.read();
+      bytes = value ? value.length : 0;
+      reader.cancel().catch(() => {});
     }
-    return `.${ext}: ${r.status} ${type}${note ? ` „${note}“` : ''}`;
-  } catch {
-    return `.${ext}: nicht erreichbar`;
+    return { status: r.status, type, text, bytes, ms: Math.round(performance.now() - t0) };
+  } catch (e) {
+    return { error: e.name === 'AbortError' ? 'keine Antwort innerhalb von 8 Sekunden' : e.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
+const tidy = (t) => t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+// Folgt dem ersten Eintrag einer Playlist (Unterliste oder Videostück) und meldet, was der Server liefert
+async function followPlaylist(text, depth) {
+  const next = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+  if (!next) return ['Playlist ohne Einträge'];
+  const r = await peek(next.startsWith('/') ? `${location.origin}${next}` : next, { Range: 'bytes=0-4095' });
+  const label = /m3u8|mpegurl/i.test(decodeURIComponent(next)) ? 'Unterliste' : 'Videostück';
+  if (r.error) return [`${label}: ${r.error}`];
+  const out = [`${label}: ${r.status} ${r.type}${r.bytes ? ` ${r.bytes} Bytes` : ''} (${r.ms} ms)${/text|html/.test(r.type) ? ` „${tidy(r.text).slice(0, 60)}“` : ''}`];
+  if (depth < 1 && /mpegurl/i.test(r.type)) out.push(...await followPlaylist(r.text, depth + 1));
+  return out;
+}
+
+async function probe(url) {
+  const ext = (new URL(url).pathname.match(/\.(\w+)$/) || [])[1] || '?';
+  // Playlists ganz laden (klein); bei Filmen genügt ein Byte
+  const first = await peek(proxify(url), /\.m3u8?(\?|$)/i.test(url) ? {} : { Range: 'bytes=0-0' });
+  if (first.error) return [`.${ext}: ${first.error}`];
+  const isList = /mpegurl/i.test(first.type) || first.text.startsWith('#EXTM3U');
+  const lines = [`.${ext}: ${first.status} ${first.type}${first.bytes ? ` ${first.bytes} Bytes` : ''} (${first.ms} ms)${first.text && !isList ? ` „${tidy(first.text).slice(0, 80)}“` : ''}`];
+  if (isList) lines.push(...await followPlaylist(first.text, 0));
+  return lines;
+}
+
 async function probeLines(urls) {
-  return Promise.all([...new Set(urls)].map((u) => Promise.race([
+  const parts = await Promise.all([...new Set(urls)].map((u) => Promise.race([
     probe(u),
-    new Promise((resolve) => setTimeout(() => resolve(`${new URL(u).pathname.split('/').pop()}: keine Antwort innerhalb von 8 Sekunden`), 8000)),
+    new Promise((resolve) => setTimeout(() => resolve([`${new URL(u).pathname.split('/').pop()}: keine Antwort`]), 25000)),
   ])));
+  return parts.flat();
 }
 
 async function describeFailure(urls) {
@@ -1200,9 +1235,9 @@ function armWatchdog(urls, token) {
     if (token !== playToken || video.readyState >= 3 || !$('#player-error').hidden) return;
     const lines = await probeLines(urls);
     if (token !== playToken || video.readyState >= 3) return;
-    showPlayerError(`Noch kein Bild nach ${Math.round((window.__watchdogMs || 15000) / 1000)} Sekunden.\n${lines.join('\n')}`);
+    showPlayerError(`Noch kein Bild nach ${Math.round((window.__watchdogMs || 20000) / 1000)} Sekunden.\n${lines.join('\n')}`);
     $('#player-error').dataset.kind = 'stall';
-  }, window.__watchdogMs || 15000);
+  }, window.__watchdogMs || 20000);
 }
 video.addEventListener('playing', () => {
   clearTimeout(stallTimer);
