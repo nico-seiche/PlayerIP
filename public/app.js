@@ -1119,6 +1119,7 @@ function stopRemux() {
 
 function teardownPlayer() {
   playToken++;
+  clearTimeout(stallTimer);
   stopRemux();
   revokeLocal();
   setAirplayMode('native');
@@ -1135,6 +1136,7 @@ function teardownPlayer() {
 }
 
 let playToken = 0;
+let liveNow = false; // läuft gerade ein Live-Sender?
 
 // Kandidatenliste: direkt -> Proxy, danach (falls vorhanden) die HLS-Variante desselben Titels.
 function buildCandidates(urls) {
@@ -1178,13 +1180,40 @@ async function probe(url) {
   }
 }
 
+async function probeLines(urls) {
+  return Promise.all([...new Set(urls)].map((u) => Promise.race([
+    probe(u),
+    new Promise((resolve) => setTimeout(() => resolve(`${new URL(u).pathname.split('/').pop()}: keine Antwort innerhalb von 8 Sekunden`), 8000)),
+  ])));
+}
+
 async function describeFailure(urls) {
-  const lines = await Promise.all([...new Set(urls)].map(probe));
+  const lines = await probeLines(urls);
   return `Wiedergabe nicht möglich (Fehlercode ${video.error?.code ?? '–'}).\n${lines.join('\n')}`;
 }
 
+/* Schwarzer Bildschirm ohne Fehlermeldung? Wenn nach 15 s noch nichts läuft, fragt die App den Server und zeigt, was er antwortet. */
+let stallTimer;
+function armWatchdog(urls, token) {
+  clearTimeout(stallTimer);
+  stallTimer = setTimeout(async () => {
+    if (token !== playToken || video.readyState >= 3 || !$('#player-error').hidden) return;
+    const lines = await probeLines(urls);
+    if (token !== playToken || video.readyState >= 3) return;
+    showPlayerError(`Noch kein Bild nach ${Math.round((window.__watchdogMs || 15000) / 1000)} Sekunden.\n${lines.join('\n')}`);
+    $('#player-error').dataset.kind = 'stall';
+  }, window.__watchdogMs || 15000);
+}
+video.addEventListener('playing', () => {
+  clearTimeout(stallTimer);
+  const e = $('#player-error');
+  if (e.dataset.kind === 'stall') { showPlayerError(''); delete e.dataset.kind; }
+});
+
 function attach(urls) {
-  tryCandidate(buildCandidates(urls), 0, ++playToken);
+  const token = ++playToken;
+  armWatchdog(urls.filter(Boolean).slice(0, 2), token);
+  tryCandidate(buildCandidates(urls), 0, token);
 }
 
 function tryCandidate(list, index, token) {
@@ -1226,6 +1255,7 @@ function revokeLocal() {
 
 // Heruntergeladene Datei abspielen (offline): MP4 & Co. direkt, MKV über die Umwandlung im Browser
 async function playDownloaded(meta) {
+  liveNow = false;
   $('#player-title').textContent = meta.title;
   $('#player-sub').textContent = [meta.sub, 'Offline'].filter(Boolean).join(' · ');
   if (!layers.includes('player')) pushLayer('player');
@@ -1253,6 +1283,9 @@ async function playDownloaded(meta) {
 }
 
 async function playStream(url, title, sub, liveId, alt) {
+  liveNow = Boolean(liveId);
+  video.playbackRate = liveNow ? 1 : rate;
+  video.defaultPlaybackRate = liveNow ? 1 : rate;
   $('#player-title').textContent = title;
   $('#player-sub').textContent = sub || '';
   if (!layers.includes('player')) pushLayer('player');
@@ -1284,7 +1317,7 @@ let scrubFrac = 0;
 let menuKind = null;
 let rate = 1;
 
-const isLive = () => video.duration === Infinity;
+const isLive = () => liveNow || video.duration === Infinity;
 
 function showUi() {
   playerEl.classList.remove('idle');
@@ -1333,7 +1366,11 @@ for (const ev of ['timeupdate', 'durationchange', 'loadedmetadata', 'seeked', 'e
 for (const ev of ['play', 'pause', 'playing', 'emptied']) video.addEventListener(ev, updatePlayState);
 video.addEventListener('play', showUi);
 video.addEventListener('pause', showUi);
-video.addEventListener('loadedmetadata', () => { video.playbackRate = rate; updateAudioButton(); });
+video.addEventListener('loadedmetadata', () => {
+  // Live nie schneller/langsamer abspielen: bei erhöhtem Tempo läuft der Puffer leer, das Bild friert ein oder bleibt schwarz.
+  video.playbackRate = liveNow || isLive() ? 1 : rate;
+  updateAudioButton();
+});
 
 $('#play-btn').addEventListener('click', () => { if (video.paused) video.play().catch(() => {}); else video.pause(); });
 const skip = (delta) => {
